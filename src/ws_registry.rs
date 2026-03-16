@@ -262,6 +262,7 @@ impl WebSocketRegistry {
 
 #[cfg(test)]
 mod tests {
+    use super::WebSocketRegistry;
     use crate::types::{
         BackendToClientMessage, AssistantTextMessage,
     };

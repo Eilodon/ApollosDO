@@ -16,6 +16,17 @@ use crate::types::MotionState;
 use crate::browser_executor::BrowserExecutor;
 use crate::digital_agent::{DigitalResult, UserReplyTx};
 
+use firestore::*;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentSessionState {
+    pub session_id: String,
+    pub created_at_ms: i64,
+    pub last_seen_ms: i64,
+    pub motion_state: MotionState,
+    pub nova_call_count: u64,
+}
+
 pub struct DigitalAgentHandle {
     pub cancel: CancellationToken,
     pub task: JoinHandle<DigitalResult>,
@@ -123,6 +134,7 @@ pub struct SessionState {
     pub pending_user_reply: Arc<tokio::sync::Mutex<Option<UserReplyTx>>>,
     pub browser_executor: Arc<tokio::sync::Mutex<Option<Arc<BrowserExecutor>>>>,
     pub nova_call_timestamps: Vec<f64>,
+    pub nova_call_total: u64,
 }
 
 impl SessionState {
@@ -136,6 +148,17 @@ impl SessionState {
             pending_user_reply: Arc::new(tokio::sync::Mutex::new(None)),
             browser_executor: Arc::new(tokio::sync::Mutex::new(None)),
             nova_call_timestamps: Vec::new(),
+            nova_call_total: 0,
+        }
+    }
+
+    fn to_persistent(&self) -> PersistentSessionState {
+        PersistentSessionState {
+            session_id: self.session_id.clone(),
+            created_at_ms: self.created_at.timestamp_millis(),
+            last_seen_ms: self.last_seen.timestamp_millis(),
+            motion_state: self.motion_state,
+            nova_call_count: self.nova_call_total,
         }
     }
 }
@@ -145,9 +168,16 @@ pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<RwLock<SessionState>>>>>,
     digital_agent_cancel_metrics: Arc<DigitalAgentCancelMetrics>,
     nova_call_metrics: Arc<NovaCallMetrics>,
+    firestore: Option<FirestoreDb>,
 }
 
 impl SessionStore {
+    pub fn with_firestore(db: FirestoreDb) -> Self {
+        Self {
+            firestore: Some(db),
+            ..Self::default()
+        }
+    }
     pub async fn get_session(&self, session_id: &str) -> Option<Arc<RwLock<SessionState>>> {
         let guard = self.inner.read().await;
         guard.get(session_id).cloned()
@@ -179,6 +209,25 @@ impl SessionStore {
         slot
     }
 
+    pub async fn sync_to_firestore(&self, session_id: &str) {
+        let Some(db) = &self.firestore else { return };
+        let Some(arc) = self.get_session(session_id).await else { return };
+        let persistent = arc.read().await.to_persistent();
+
+        if let Err(e) = db.fluent()
+            .update()
+            .in_col("sessions")
+            .document_id(&persistent.session_id)
+            .object(&persistent)
+            .execute::<PersistentSessionState>()
+            .await 
+        {
+            tracing::error!(session_id = %session_id, error = %e, "Failed to sync session to Firestore");
+        } else {
+            tracing::debug!(session_id = %session_id, "Synced session to Firestore");
+        }
+    }
+
     pub async fn send_user_reply(&self, session_id: &str, answer: String) -> bool {
         let slot = self.get_reply_slot(session_id).await;
         let mut guard = slot.lock().await;
@@ -207,6 +256,8 @@ impl SessionStore {
         if let Some(ms) = motion_state {
             state.motion_state = ms;
         }
+        drop(state);
+        self.sync_to_firestore(session_id).await;
     }
 
     pub async fn set_digital_agent_handle(
@@ -267,6 +318,10 @@ impl SessionStore {
                 return false;
             }
             
+            state.nova_call_timestamps.push(now);
+            state.nova_call_total += 1;
+            drop(state);
+            self.sync_to_firestore(session_id).await;
             true
         } else {
             false

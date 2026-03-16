@@ -654,7 +654,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nova_reasoning_client::ActionTarget;
+    use crate::types::ActionTarget;
 
     #[test]
     fn sensitive_guard_flags_payment_click() {

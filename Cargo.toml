@@ -51,5 +51,9 @@ dotenvy = "0.15"
 # UUID
 uuid = { version = "1.0", features = ["v4", "serde"] }
 
+# Firestore
+firestore = "0.45"
+serde_with = "3"
+
 [profile.release]
 opt-level = 3
