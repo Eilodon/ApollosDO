@@ -1,0 +1,55 @@
+[package]
+name = "apollos-ui-navigator"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "apollos-ui-navigator"
+path = "src/main.rs"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Async streams
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+
+# Browser automation
+chromiumoxide = { version = "0.7", features = ["tokio", "tokio-runtime"] }
+
+# HTTP client (Gemini API calls)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Encoding
+base64 = "0.22"
+
+# Hashing (screenshot cache — SHA256 per ADR-N17)
+sha2 = "0.10"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Dotenv
+dotenvy = "0.15"
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
