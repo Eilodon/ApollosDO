@@ -21,6 +21,8 @@ pub struct NovaReasoningClient {
     endpoint: String,
 }
 
+const STEP_HISTORY_WINDOW: usize = 5;
+
 impl NovaReasoningClient {
     pub async fn new() -> anyhow::Result<Self> {
         let api_key = std::env::var("GRADIENT_API_KEY")
@@ -87,7 +89,7 @@ impl NovaReasoningClient {
         );
 
         // ADR-029: Smart History: Persistent Dialogue + Truncated Steps
-        let recent_steps: Vec<&String> = step_history.iter().rev().take(5).collect::<Vec<_>>()
+        let recent_steps: Vec<&String> = step_history.iter().rev().take(STEP_HISTORY_WINDOW).collect::<Vec<_>>()
             .into_iter().rev().collect();
         let mut history_ctx = String::new();
         if !dialogue_history.is_empty() {
@@ -96,7 +98,7 @@ impl NovaReasoningClient {
             history_ctx += "\n";
         }
         if !recent_steps.is_empty() {
-            history_ctx += "[Recent steps (last 5)]\n";
+            history_ctx += &format!("[Recent steps (last {})]\n", STEP_HISTORY_WINDOW);
             history_ctx += &recent_steps.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
         } else if dialogue_history.is_empty() {
             history_ctx += "No previous steps.";
