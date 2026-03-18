@@ -336,7 +336,7 @@ impl NovaReasoningClient {
 
 fn normalize_browser_agent_model(requested: &str) -> String {
     match requested {
-        "llama3.2-vision" => DEFAULT_BROWSER_AGENT_MODEL.to_string(),
+        "llama3.2-vision" => "llama3.2-vision".to_string(),
         other => other.to_string(),
     }
 }
@@ -344,7 +344,7 @@ fn normalize_browser_agent_model(requested: &str) -> String {
 fn model_supports_image_input(model: &str) -> bool {
     matches!(
         model,
-        "openai-gpt-4o" | "openai-gpt-4o-mini" | "openai-gpt-4.1"
+        "openai-gpt-4o" | "openai-gpt-4o-mini" | "openai-gpt-4.1" | "llama3.2-vision"
     )
 }
 

@@ -34,9 +34,9 @@ Most websites still fail blind users long before a screen reader can help. Poor 
 
 Apollos DO is a voice-controlled browser agent for blind and low-vision users.
 
-The user gives a natural-language task such as finding a flight or looking up a schedule. The system launches a browser, captures screenshots of the current page, and sends them to DigitalOcean Gradient AI for step-by-step reasoning. The model returns a structured next action, which Apollos DO validates and executes. As it works, it narrates progress in real time, asks follow-up questions when the task is ambiguous, and escalates to human support instead of guessing on payment or other sensitive actions.
+The user gives a natural-language task such as finding a flight or looking up a schedule. The system launches a browser and uses a **Hybrid Reasoning Strategy**: it first extracts interactive DOM context for high-speed, precise navigation with `llama3.3-70b-instruct`. When the DOM is insufficient (unlabeled icons, complex layouts), it falls back to screenshot-based reasoning using `llama3.2-vision` to "see" the page exactly as a user would. 
 
-The current hackathon build focuses on a web demo with browser-native speech input and spoken output.
+The current hackathon build focuses on a web demo with browser-native speech input and spoken output, narrating every step in real-time.
 
 ---
 
@@ -47,19 +47,19 @@ Apollos DO is built in Rust with:
 - Axum for the web server
 - Tokio for async orchestration
 - chromiumoxide for browser automation through Chrome DevTools Protocol
-- DigitalOcean Gradient AI with `llama3.3-70b-instruct` for browser reasoning grounded in live DOM and page context
+- DigitalOcean Gradient AI with `llama3.3-70b-instruct` (Reasoning) and `llama3.2-vision` (Vision fallback)
 - DigitalOcean App Platform deployment spec in `.do/app.yaml`
 - browser-native Web Speech API for the voice demo
 
 The core loop:
 
 1. receives a user intent
-2. captures a screenshot of the current page
-3. sends screenshot + context to DigitalOcean Gradient AI
+2. extracts interactive DOM context + captures a screenshot
+3. sends context (and optionally screenshot if fallback is needed) to DigitalOcean Gradient AI
 4. parses the returned structured action
 5. validates safety constraints
 6. executes the action in Chromium
-7. publishes narration to the demo UI
+7. publishes narration to the demo UI via a shared StatusBus (SSE)
 
 We also added:
 
@@ -74,7 +74,7 @@ We also added:
 
 DigitalOcean Gradient AI is the central reasoning engine in Apollos DO.
 
-We use the Gradient inference endpoint with `llama3.3-70b-instruct` to reason over live page context and decide the next browser action. Every meaningful browser step depends on Gradient AI output. This is not a cosmetic integration or side feature; it is the decision-making core of the product.
+We use the Gradient inference endpoint with `llama3.3-70b-instruct` (70 billion parameters) for high-intelligence browser reasoning grounded in live DOM data. We also support `llama3.2-vision` for visual-only parts of the page. Every meaningful browser step depends on Gradient AI output. This is not a secondary feature; it is the decision-making core of the product.
 
 DigitalOcean App Platform is also part of the deployment story through the included app spec.
 
@@ -131,7 +131,7 @@ Apollos DO aims to restore autonomy in one of the most frustrating accessibility
 
 ## Demo URL
 
-`https://apollos-ui-navigator-7qfxx.ondigitalocean.app/demo`
+`https://apollos-ui-navigator-7qfxx.ondigitalocean.app/demo` (Live on DO App Platform)
 
 ---
 
