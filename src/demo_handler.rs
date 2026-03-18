@@ -244,14 +244,29 @@ pub async fn user_reply(
 }
 
 /// GET /demo/status — ADR-030: Replay buffered messages + live stream
-pub async fn status_stream() -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+///
+/// SSE FLUSH FIX: Returns axum Response with explicit anti-buffering headers.
+/// - X-Accel-Buffering: no  → tells nginx/DO App Platform NOT to buffer this stream
+/// - Cache-Control: no-cache → CDN and browser must not cache SSE
+/// - KeepAlive every 5s     → curl/browser know stream is alive even when quiet
+pub async fn status_stream() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use std::time::Duration;
+
     // Replay buffered history for late subscribers
     let replay = status_bus::replay_snapshot();
+
+    // A SSE comment frame (":ok\n\n") causes most HTTP stacks to flush immediately.
+    // Prepend to guarantee the connection is established + flushed before data starts.
+    // We use tokio_stream::iter with a single comment item for type uniformity.
+    let handshake_items: Vec<Result<Event, Infallible>> =
+        vec![Ok(Event::default().comment("ok"))];
+    let handshake = tokio_stream::iter(handshake_items);
 
     let replay_stream = tokio_stream::iter(
         replay
             .into_iter()
-            .map(|text| Ok(Event::default().data(text))),
+            .map(|text| Ok::<Event, Infallible>(Event::default().data(text))),
     );
 
     // Then chain with live broadcast
@@ -261,7 +276,23 @@ pub async fn status_stream() -> Sse<impl tokio_stream::Stream<Item = Result<Even
         Err(_) => None,
     });
 
-    Sse::new(replay_stream.chain(live_stream)).keep_alive(axum::response::sse::KeepAlive::default())
+    // KeepAlive every 5s — keeps curl/browser from thinking the stream died
+    let sse = Sse::new(handshake.chain(replay_stream).chain(live_stream)).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(5))
+            .text("keep-alive"),
+    );
+
+    // Inject anti-buffering headers so nginx / DO App Platform won't hold the stream
+    (
+        [
+            ("X-Accel-Buffering", "no"),
+            ("Cache-Control", "no-cache"),
+            ("X-Content-Type-Options", "nosniff"),
+        ],
+        sse,
+    )
+        .into_response()
 }
 
 const DEMO_HTML: &str = r#"<!DOCTYPE html>
