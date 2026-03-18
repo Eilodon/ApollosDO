@@ -263,9 +263,7 @@ impl WebSocketRegistry {
 #[cfg(test)]
 mod tests {
     use super::WebSocketRegistry;
-    use crate::types::{
-        BackendToClientMessage, AssistantTextMessage,
-    };
+    use crate::types::{AssistantTextMessage, BackendToClientMessage};
     use tokio::sync::mpsc;
 
     fn connection_state_payload() -> BackendToClientMessage {

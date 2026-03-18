@@ -5,7 +5,9 @@ use crate::types::HumanHelpSessionMessage;
 pub struct HumanFallbackService;
 
 impl HumanFallbackService {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     pub async fn create_help_session(
         &self,

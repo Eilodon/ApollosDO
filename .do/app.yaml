@@ -1,42 +1,40 @@
-spec:
-  name: apollos-ui-navigator
-  region: nyc
+name: apollos-ui-navigator
+region: nyc
 
-  services:
-    - name: web
-      github:
-        repo: Eilodon/ApollosDO
-        branch: main
-        deploy_on_push: true
-      dockerfile_path: Dockerfile
-      http_port: 8080
-      instance_count: 1
-      instance_size_slug: basic-s
+services:
+  - name: web
+    git:
+      repo_clone_url: https://github.com/Eilodon/ApollosDO.git
+      branch: master
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-s
 
-      envs:
-        - key: GRADIENT_API_KEY
-          scope: RUN_TIME
-          type: SECRET
-        - key: GRADIENT_ENDPOINT
-          scope: RUN_TIME
-          value: "https://inference.do-ai.run/v1/chat/completions"
-        - key: BROWSER_AGENT_MODEL
-          scope: RUN_TIME
-          value: "llama3.2-vision"
-        - key: DEMO_MODE
-          scope: RUN_TIME
-          value: "1"
-        - key: BROWSER_HEADLESS
-          scope: RUN_TIME
-          value: "true"
-        - key: PORT
-          scope: RUN_TIME
-          value: "8080"
-        - key: RUST_LOG
-          scope: RUN_TIME
-          value: "info"
+    envs:
+      - key: GRADIENT_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: GRADIENT_ENDPOINT
+        scope: RUN_TIME
+        value: "https://inference.do-ai.run/v1/chat/completions"
+      - key: BROWSER_AGENT_MODEL
+        scope: RUN_TIME
+        value: "llama3.2-vision"
+      - key: DEMO_MODE
+        scope: RUN_TIME
+        value: "1"
+      - key: BROWSER_HEADLESS
+        scope: RUN_TIME
+        value: "true"
+      - key: PORT
+        scope: RUN_TIME
+        value: "8080"
+      - key: RUST_LOG
+        scope: RUN_TIME
+        value: "info"
 
-      health_check:
-        http_path: /healthz
-        initial_delay_seconds: 30
-        period_seconds: 10
+    health_check:
+      http_path: /healthz
+      initial_delay_seconds: 30
+      period_seconds: 10

@@ -21,8 +21,6 @@ impl std::fmt::Debug for BrowserExecutor {
     }
 }
 
-
-
 impl BrowserExecutor {
     pub async fn new(starting_url: &str) -> anyhow::Result<Self> {
         // Chrome executable path from env — configurable for different deployment environments
@@ -72,9 +70,7 @@ impl BrowserExecutor {
         let (browser, mut handler) = Browser::launch(config).await?;
 
         // Spawn handler loop — chromiumoxide yêu cầu
-        tokio::spawn(async move {
-            while let Some(_) = handler.next().await {}
-        });
+        tokio::spawn(async move { while let Some(_) = handler.next().await {} });
 
         let page = browser.new_page(starting_url).await?;
 
@@ -89,7 +85,9 @@ impl BrowserExecutor {
         Ok(page
             .screenshot(
                 chromiumoxide::page::ScreenshotParams::builder()
-                    .format(chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png)
+                    .format(
+                        chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat::Png,
+                    )
                     .build(),
             )
             .await?)
@@ -174,7 +172,9 @@ impl BrowserExecutor {
             AgentAction::Done { .. }
             | AgentAction::Escalate { .. }
             | AgentAction::AskUser { .. } => {
-                unreachable!("Terminal/Dialogue states handled before execute() is called — ADR-015")
+                unreachable!(
+                    "Terminal/Dialogue states handled before execute() is called — ADR-015"
+                )
             }
         }
     }
@@ -213,11 +213,8 @@ impl BrowserExecutor {
 
         // 4. Coordinate click — last resort
         if let Some((x, y)) = target.coordinates {
-            page.evaluate(format!(
-                "document.elementFromPoint({},{})?.click()",
-                x, y
-            ))
-            .await?;
+            page.evaluate(format!("document.elementFromPoint({},{})?.click()", x, y))
+                .await?;
             // Body là dummy return — coordinate click không cần element ref
             return page
                 .find_element("body")

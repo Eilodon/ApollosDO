@@ -1,9 +1,10 @@
+use crate::status_bus;
 use crate::types::{AssistantTextMessage, BackendToClientMessage, MotionState};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio_util::sync::CancellationToken;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 /// Shared state để HTTP handler gửi answer vào loop đang chờ
 pub type UserReplyTx = oneshot::Sender<String>;
@@ -12,8 +13,8 @@ pub type UserReplyRx = oneshot::Receiver<String>;
 /// Một lượt trao đổi trong conversation
 #[derive(Debug, Clone)]
 pub struct ConversationTurn {
-    pub question: String,    // agent hỏi
-    pub answer: String,      // user trả lời
+    pub question: String, // agent hỏi
+    pub answer: String,   // user trả lời
 }
 
 use crate::browser_executor::BrowserExecutor;
@@ -64,7 +65,8 @@ pub struct DigitalSessionContext {
     /// [NEW] Slot chứa oneshot::Sender khi agent đang chờ user reply
     pub reply_tx_slot: std::sync::Arc<tokio::sync::Mutex<Option<UserReplyTx>>>,
     /// [NEW] Slot chứa browser executor đang chạy để demo có thể lấy screenshot
-    pub browser_executor_slot: std::sync::Arc<tokio::sync::Mutex<Option<std::sync::Arc<BrowserExecutor>>>>,
+    pub browser_executor_slot:
+        std::sync::Arc<tokio::sync::Mutex<Option<std::sync::Arc<BrowserExecutor>>>>,
 }
 
 impl DigitalAgent {
@@ -93,6 +95,7 @@ impl DigitalAgent {
             let ws = ctx.ws_registry.clone();
             let sid = ctx.session_id.clone();
             async move {
+                status_bus::publish(text.clone());
                 let _ = ws
                     .send_live(
                         &sid,
@@ -108,19 +111,17 @@ impl DigitalAgent {
 
         // ADR-013: Direct warmup emit — no subprocess dependency.
         // Gradient AI is the sole reasoning engine.
-        let _ = emit_status("🧠 Đang phân tích yêu cầu...".to_string()).await;
+        let _ = emit_status("Analyzing your request...".to_string()).await;
 
         // Khởi tạo browser
-        let browser = match BrowserExecutor::new("https://www.google.com.vn").await {
+        let browser = match BrowserExecutor::new("https://www.google.com").await {
             Ok(b) => {
                 let arc_b = Arc::new(b);
                 // Store in slot for live visualization
                 *ctx.browser_executor_slot.lock().await = Some(arc_b.clone());
                 arc_b
             }
-            Err(e) => {
-                return DigitalResult::Failed(format!("Không thể khởi động browser: {}", e))
-            }
+            Err(e) => return DigitalResult::Failed(format!("Could not start the browser: {}", e)),
         };
 
         // ADR-012: DO Gradient rate limits — tuned for optimal inference throughput
@@ -149,18 +150,21 @@ impl DigitalAgent {
                     step,
                     "Digital agent cancelled at step start by safety system"
                 );
-                return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into()));
+                return_result!(
+                    ctx.browser_executor_slot,
+                    DigitalResult::Failed("Interrupted by the safety system.".into())
+                );
             }
 
             // ── Screenshot với cancel race ────────────────────────────────
             let screenshot = tokio::select! {
                 _ = cancel.cancelled() => {
                     tracing::warn!(session_id = %ctx.session_id, "Cancelled during screenshot");
-                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi chụp màn hình".into()));
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted while capturing the page.".into()));
                 }
                 result = browser.screenshot() => match result {
                     Ok(s) => s,
-                    Err(e) => return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Screenshot lỗi: {}", e))),
+                    Err(e) => return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Screenshot failed: {}", e))),
                 }
             };
 
@@ -200,10 +204,10 @@ impl DigitalAgent {
                         stable_frames = consecutive_stable_frames,
                         "Screenshot unchanged — skipping Nova call, waiting for page"
                     );
-                    emit_status("Đang tải trang...".to_string()).await;
+                    emit_status("Waiting for the page to update...".to_string()).await;
                     tokio::select! {
                         _ = cancel.cancelled() => {
-                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi chờ tải trang".into()));
+                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted while waiting for the page.".into()));
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(nova_backoff_ms)) => {}
                     }
@@ -228,10 +232,13 @@ impl DigitalAgent {
                 .await
             {
                 ctx.sessions.record_nova_blocked();
-                emit_status("Hệ thống đang giới hạn tốc độ truy vấn, vui lòng đợi...".to_string()).await;
+                emit_status(
+                    "The reasoning service is rate limited. Waiting before retrying...".to_string(),
+                )
+                .await;
                 tokio::select! {
                     _ = cancel.cancelled() => {
-                        return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into()));
+                        return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted by the safety system.".into()));
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(nova_backoff_ms)) => {}
                 }
@@ -253,7 +260,7 @@ impl DigitalAgent {
             let action_result = tokio::select! {
                 _ = cancel.cancelled() => {
                     tracing::warn!(session_id = %ctx.session_id, "Cancelled during Nova reasoning");
-                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi AI đang suy nghĩ".into()));
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted while the model was reasoning.".into()));
                 }
                 result = self.reasoning.next_action_with_cancel(
                     &screenshot, intent, &dialogue_history, &step_history, step,
@@ -268,7 +275,10 @@ impl DigitalAgent {
             let action = match action_result {
                 Ok(a) => a,
                 Err(e) => {
-                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Nova reasoning lỗi: {}", e)));
+                    return_result!(
+                        ctx.browser_executor_slot,
+                        DigitalResult::Failed(format!("Reasoning failed: {}", e))
+                    );
                 }
             };
 
@@ -276,7 +286,8 @@ impl DigitalAgent {
             let action_key = compute_action_key(&action);
             action_key_history.push(action_key.clone());
             if action_key_history.len() >= STUCK_THRESHOLD as usize {
-                let tail = &action_key_history[action_key_history.len() - STUCK_THRESHOLD as usize..];
+                let tail =
+                    &action_key_history[action_key_history.len() - STUCK_THRESHOLD as usize..];
                 if tail.iter().all(|k| k == &action_key) {
                     tracing::warn!(
                         session_id = %ctx.session_id,
@@ -285,7 +296,7 @@ impl DigitalAgent {
                         STUCK_THRESHOLD
                     );
                     return_result!(ctx.browser_executor_slot, DigitalResult::NeedHuman(
-                        format!("AI bị kẹt lặp lại cùng một thao tác ({}) — cần người hỗ trợ", action_key)
+                        format!("The agent is stuck repeating the same action ({}) and needs human support.", action_key)
                     ));
                 }
             }
@@ -299,13 +310,19 @@ impl DigitalAgent {
             match &action {
                 AgentAction::Done { summary } => {
                     tracing::info!(session_id = %ctx.session_id, "Digital task done: {}", summary);
-                    emit_status(format!("✅ {}", summary)).await;
-                    return_result!(ctx.browser_executor_slot, DigitalResult::Done(summary.clone()));
+                    emit_status(format!("Done: {}", summary)).await;
+                    return_result!(
+                        ctx.browser_executor_slot,
+                        DigitalResult::Done(summary.clone())
+                    );
                 }
                 AgentAction::Escalate { reason } => {
                     tracing::warn!(session_id = %ctx.session_id, "Digital task escalating: {}", reason);
                     // ADR-025: Simulate Safe Mode loop
-                    return_result!(ctx.browser_executor_slot, activate_safe_mode(&ctx, reason, &cancel).await);
+                    return_result!(
+                        ctx.browser_executor_slot,
+                        activate_safe_mode(&ctx, reason, &cancel).await
+                    );
                 }
                 AgentAction::AskUser { question } => {
                     // ADR-029: Enforce max ask_user turns
@@ -313,11 +330,11 @@ impl DigitalAgent {
                     if ask_user_count > ASK_USER_MAX_TURNS {
                         tracing::warn!(session_id = %ctx.session_id, "ADR-029: ask_user limit reached ({})", ASK_USER_MAX_TURNS);
                         return_result!(ctx.browser_executor_slot, DigitalResult::NeedHuman(
-                            "AI đã hỏi quá nhiều lần — cần người hỗ trợ trực tiếp".to_string()
+                            "The agent asked too many clarification questions and now needs human support.".to_string()
                         ));
                     }
                     tracing::info!(session_id = %ctx.session_id, "Agent asking user: {}", question);
-                    emit_status(format!("❓ {}", question)).await;
+                    emit_status(format!("Question: {}", question)).await;
 
                     let (tx, rx) = oneshot::channel::<String>();
                     {
@@ -328,25 +345,26 @@ impl DigitalAgent {
                     let answer = tokio::select! {
                         _ = cancel.cancelled() => {
                             tracing::warn!(session_id = %ctx.session_id, "Cancelled while waiting for user reply");
-                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn trong khi chờ phản hồi".into()));
+                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted while waiting for your reply.".into()));
                         }
                         result = rx => {
                             match result {
                                 Ok(ans) => ans,
-                                Err(_) => return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Kết nối bị đứt khi chờ phản hồi".into())),
+                                Err(_) => return_result!(ctx.browser_executor_slot, DigitalResult::Failed("The reply channel closed while waiting for your answer.".into())),
                             }
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
-                            emit_status("⏱️ Hết thời gian chờ phản hồi".to_string()).await;
-                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Hết thời gian chờ phản hồi".into()));
+                            emit_status("Timed out while waiting for your reply.".to_string()).await;
+                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Timed out while waiting for your reply.".into()));
                         }
                     };
 
-                    dialogue_history.push(format!("[User dialogue] Q: {} | A: {}", question, answer));
+                    dialogue_history
+                        .push(format!("[User dialogue] Q: {} | A: {}", question, answer));
                     if dialogue_history.len() > 10 {
                         dialogue_history.remove(0);
                     }
-                    emit_status(format!("👤 User: {}", answer)).await;
+                    emit_status(format!("User replied: {}", answer)).await;
                     continue;
                 }
                 _ => {}
@@ -363,10 +381,16 @@ impl DigitalAgent {
                         "Sensitive action guard triggered: {}",
                         reason
                     );
-                    return_result!(ctx.browser_executor_slot, activate_safe_mode(&ctx, &reason, &cancel).await);
+                    return_result!(
+                        ctx.browser_executor_slot,
+                        activate_safe_mode(&ctx, &reason, &cancel).await
+                    );
                 }
                 SensitiveGuardOutcome::Cancelled => {
-                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into()));
+                    return_result!(
+                        ctx.browser_executor_slot,
+                        DigitalResult::Failed("Interrupted by the safety system.".into())
+                    );
                 }
             }
 
@@ -375,7 +399,10 @@ impl DigitalAgent {
                 match validate_navigate_url(url) {
                     NavigateDecision::Block(reason) => {
                         tracing::warn!(session_id = %ctx.session_id, url, "ADR-027: Navigate blocked — {}", reason);
-                        step_history.push(format!("Step {}: BLOCKED navigate to {} — {}", step, url, reason));
+                        step_history.push(format!(
+                            "Step {}: BLOCKED navigate to {} — {}",
+                            step, url, reason
+                        ));
                         continue; // skip this action, let AI try again
                     }
                     NavigateDecision::Escalate(reason) => {
@@ -388,37 +415,54 @@ impl DigitalAgent {
             // ── Execute action với cancel race ────────────────────────────
             let exec_result = tokio::select! {
                 _ = cancel.cancelled() => {
-                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi thực thi action".into()));
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted while executing the browser action.".into()));
                 }
                 result = browser.execute(&action) => result
             };
 
             if let Err(e) = exec_result {
-                return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Browser execute lỗi: {}", e)));
+                return_result!(
+                    ctx.browser_executor_slot,
+                    DigitalResult::Failed(format!("Browser execution failed: {}", e))
+                );
             }
 
             // [ENHANCED] Human-readable narration thay vì "Step N: action"
             let narration = match &action {
                 AgentAction::Navigate { url } => {
-                    format!("Đang mở {}...", url.split('/').nth(2).unwrap_or("trang web"))
+                    format!(
+                        "Opening {}...",
+                        url.split('/').nth(2).unwrap_or("the website")
+                    )
                 }
                 AgentAction::Click { target } => {
-                    let label = target.aria_label.as_deref()
+                    let label = target
+                        .aria_label
+                        .as_deref()
                         .or(target.text_content.as_deref())
-                        .unwrap_or("phần tử trên trang");
-                    format!("Đang nhấn vào '{}'...", label)
+                        .unwrap_or("the page element");
+                    format!("Clicking '{}'...", label)
                 }
                 AgentAction::Type { target, value } => {
-                    let field = target.aria_label.as_deref()
+                    let field = target
+                        .aria_label
+                        .as_deref()
                         .or(target.text_content.as_deref())
-                        .unwrap_or("ô nhập liệu");
-                    let display = if value.len() > 20 { format!("{}...", &value[..20]) } else { value.clone() };
-                    format!("Đang nhập '{}' vào {}...", display, field)
+                        .unwrap_or("the input field");
+                    let display = if value.len() > 20 {
+                        format!("{}...", &value[..20])
+                    } else {
+                        value.clone()
+                    };
+                    format!("Typing '{}' into {}...", display, field)
                 }
                 AgentAction::Scroll { direction } => {
-                    format!("Đang cuộn {} để tìm thêm thông tin...", if direction == "down" { "xuống" } else { "lên" })
+                    format!(
+                        "Scrolling {} to inspect more of the page...",
+                        if direction == "down" { "down" } else { "up" }
+                    )
                 }
-                AgentAction::Wait { reason } => format!("⏳ {}...", reason),
+                AgentAction::Wait { reason } => format!("Waiting: {}...", reason),
                 _ => String::new(),
             };
 
@@ -430,7 +474,7 @@ impl DigitalAgent {
         // ADR-017: Clear browser executor slot before final return
         *ctx.browser_executor_slot.lock().await = None;
         DigitalResult::Failed(format!(
-            "Đã thực hiện {} bước nhưng chưa xong — tác vụ quá phức tạp hoặc trang web khó điều hướng.",
+            "The agent used all {} steps without finishing. The task may be too complex or the website may be difficult to navigate.",
             MAX_STEPS
         ))
     }
@@ -491,15 +535,26 @@ impl DigitalAgent {
 fn compute_action_key(action: &AgentAction) -> String {
     match action {
         AgentAction::Click { target } => {
-            format!("click:{}", target.css.as_deref()
-                .or(target.aria_label.as_deref())
-                .or(target.text_content.as_deref())
-                .unwrap_or("coords"))
+            format!(
+                "click:{}",
+                target
+                    .css
+                    .as_deref()
+                    .or(target.aria_label.as_deref())
+                    .or(target.text_content.as_deref())
+                    .unwrap_or("coords")
+            )
         }
         AgentAction::Type { target, value } => {
-            format!("type:{}:{}", target.css.as_deref()
-                .or(target.aria_label.as_deref())
-                .unwrap_or("?"), &value[..value.len().min(10)])
+            format!(
+                "type:{}:{}",
+                target
+                    .css
+                    .as_deref()
+                    .or(target.aria_label.as_deref())
+                    .unwrap_or("?"),
+                &value[..value.len().min(10)]
+            )
         }
         AgentAction::Navigate { url } => format!("navigate:{}", url),
         AgentAction::Scroll { direction } => format!("scroll:{}", direction),
@@ -526,11 +581,20 @@ fn validate_navigate_url(url: &str) -> NavigateDecision {
         || lower.starts_with("file:")
         || lower.starts_with("vbscript:")
     {
-        return NavigateDecision::Block(format!("Blocked protocol: {}", url.split(':').next().unwrap_or("?")));
+        return NavigateDecision::Block(format!(
+            "Blocked protocol: {}",
+            url.split(':').next().unwrap_or("?")
+        ));
     }
 
     // Block local/private IPs
-    let host_part = lower.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+    let host_part = lower
+        .split("//")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
     if host_part.starts_with("127.")
         || host_part.starts_with("192.168.")
         || host_part.starts_with("10.")
@@ -541,18 +605,24 @@ fn validate_navigate_url(url: &str) -> NavigateDecision {
     }
 
     // Escalate payment/banking URLs
-    let sensitive_domains = ["checkout", "payment", "pay/", "/pay?", "billing", "purchase"];
+    let sensitive_domains = [
+        "checkout", "payment", "pay/", "/pay?", "billing", "purchase",
+    ];
     for domain in &sensitive_domains {
         if host_part.contains(domain) {
-            return NavigateDecision::Escalate(
-                format!("URL chứa trang nhạy cảm ({}) — cần xác nhận", domain)
-            );
+            return NavigateDecision::Escalate(format!(
+                "The URL looks sensitive ({}), so human confirmation is required.",
+                domain
+            ));
         }
     }
 
     // Allow must be https:// or http://
     if !lower.starts_with("http://") && !lower.starts_with("https://") {
-        return NavigateDecision::Block(format!("Only HTTP/HTTPS allowed, got: {}", url.split(':').next().unwrap_or("?")));
+        return NavigateDecision::Block(format!(
+            "Only HTTP/HTTPS allowed, got: {}",
+            url.split(':').next().unwrap_or("?")
+        ));
     }
 
     NavigateDecision::Allow
@@ -669,18 +739,18 @@ fn render_sensitive_reason(reasons: &BTreeSet<&'static str>) -> String {
     let mut labels = Vec::new();
     for reason in reasons {
         let label = match *reason {
-            "thanh_toan" => "thanh toán",
-            "otp" => "OTP/mã xác nhận",
-            "mat_khau" => "mật khẩu",
-            "tai_khoan" => "tài khoản",
-            "the_ngan_hang" => "thẻ/ngân hàng",
-            _ => "nhạy cảm",
+            "thanh_toan" => "payment",
+            "otp" => "OTP or verification code",
+            "mat_khau" => "password",
+            "tai_khoan" => "account",
+            "the_ngan_hang" => "card or banking details",
+            _ => "sensitive content",
         };
         labels.push(label);
     }
 
     format!(
-        "Trang có thao tác nhạy cảm ({}) — cần xác nhận",
+        "This page contains a sensitive action ({}) and needs human confirmation.",
         labels.join(", ")
     )
 }
@@ -774,19 +844,33 @@ fn semantic_changed(old: &[u8], new: &[u8]) -> bool {
 
     const SEMANTIC_DIFF_THRESHOLD: f64 = 0.05;
 
-    if old == new { return false; }
+    if old == new {
+        return false;
+    }
 
     // ADR-036: Fast path — SHA256 exact match
-    let hash_old = { let mut h = Sha256::new(); h.update(old); h.finalize() };
-    let hash_new = { let mut h = Sha256::new(); h.update(new); h.finalize() };
-    if hash_old == hash_new { return false; }
+    let hash_old = {
+        let mut h = Sha256::new();
+        h.update(old);
+        h.finalize()
+    };
+    let hash_new = {
+        let mut h = Sha256::new();
+        h.update(new);
+        h.finalize()
+    };
+    if hash_old == hash_new {
+        return false;
+    }
 
     let (img1, img2) = match (image::load_from_memory(old), image::load_from_memory(new)) {
         (Ok(a), Ok(b)) => (a, b),
         _ => return true,
     };
 
-    if img1.dimensions() != img2.dimensions() { return true; }
+    if img1.dimensions() != img2.dimensions() {
+        return true;
+    }
 
     let (w, h) = img1.dimensions();
     let total = (w * h) as f64;
@@ -822,33 +906,37 @@ async fn activate_safe_mode(
     // ADR-032: Call human fallback at entry, not never
     let help_link = ctx.fallback.create_help_session(&sid, reason).await;
     if let Some(ref msg) = help_link {
-        let _ = ws.send_live(
-            &sid,
-            BackendToClientMessage::HumanHelpSession(msg.clone()),
-        ).await;
+        let _ = ws
+            .send_live(&sid, BackendToClientMessage::HumanHelpSession(msg.clone()))
+            .await;
     }
 
     // Navigate to safe blank page while slot is still populated
     if let Some(browser) = ctx.browser_executor_slot.lock().await.clone() {
-        let _ = browser.execute(&AgentAction::Navigate {
-            url: "about:blank".to_string(),
-        }).await;
+        let _ = browser
+            .execute(&AgentAction::Navigate {
+                url: "about:blank".to_string(),
+            })
+            .await;
     }
 
     let base_msg = format!(
-        "🔒 Safe Mode: {} — Đang kết nối người hỗ trợ, vui lòng giữ nguyên vị trí.",
+        "Safe mode: {}. Connecting human support now. Please stay still and wait.",
         reason
     );
 
     for _ in 0..SAFE_MODE_MAX_LOOPS {
-        let _ = ws.send_live(
-            &sid,
-            BackendToClientMessage::AssistantText(AssistantTextMessage {
-                session_id: sid.clone(),
-                timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
-                text: base_msg.clone(),
-            }),
-        ).await;
+        status_bus::publish(base_msg.clone());
+        let _ = ws
+            .send_live(
+                &sid,
+                BackendToClientMessage::AssistantText(AssistantTextMessage {
+                    session_id: sid.clone(),
+                    timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+                    text: base_msg.clone(),
+                }),
+            )
+            .await;
 
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -859,7 +947,7 @@ async fn activate_safe_mode(
     }
 
     // ADR-032: Max loops reached — return NeedHuman regardless
-    DigitalResult::NeedHuman(format!("Đang chờ hỗ trợ: {}", reason))
+    DigitalResult::NeedHuman(format!("Waiting for human support: {}", reason))
 }
 
 fn env_f64(key: &str, default: f64) -> f64 {

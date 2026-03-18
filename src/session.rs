@@ -12,9 +12,9 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::types::MotionState;
 use crate::browser_executor::BrowserExecutor;
 use crate::digital_agent::{DigitalResult, UserReplyTx};
+use crate::types::MotionState;
 
 // ADR-012: In-memory session store — no external database dependency
 
@@ -105,8 +105,7 @@ struct NovaCallMetrics {
 impl NovaCallMetrics {
     fn record_call(&self, latency_ms: u64) {
         self.calls_total.fetch_add(1, Ordering::Relaxed);
-        self.latency_ms_sum
-            .fetch_add(latency_ms, Ordering::Relaxed);
+        self.latency_ms_sum.fetch_add(latency_ms, Ordering::Relaxed);
         self.latency_ms_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -184,14 +183,13 @@ impl SessionStore {
             return slot;
         }
         let mut guard = self.inner.write().await;
-        let arc = guard.entry(session_id.to_string())
+        let arc = guard
+            .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(RwLock::new(SessionState::new(session_id.to_string()))))
             .clone();
         let slot = arc.read().await.pending_user_reply.clone();
         slot
     }
-
-
 
     pub async fn send_user_reply(&self, session_id: &str, answer: String) -> bool {
         let slot = self.get_reply_slot(session_id).await;
@@ -214,7 +212,8 @@ impl SessionStore {
         _active: bool,
     ) {
         let mut guard = self.inner.write().await;
-        let arc = guard.entry(session_id.to_string())
+        let arc = guard
+            .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(RwLock::new(SessionState::new(session_id.to_string()))));
         let mut state = arc.write().await;
         state.last_seen = Utc::now();
@@ -223,26 +222,20 @@ impl SessionStore {
         }
     }
 
-    pub async fn set_digital_agent_handle(
-        &self,
-        session_id: &str,
-        handle: DigitalAgentHandle,
-    ) {
+    pub async fn set_digital_agent_handle(&self, session_id: &str, handle: DigitalAgentHandle) {
         let mut guard = self.inner.write().await;
-        let arc = guard.entry(session_id.to_string())
+        let arc = guard
+            .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(RwLock::new(SessionState::new(session_id.to_string()))));
         let mut state = arc.write().await;
         if let Some(prev) = state.digital_agent_handle.replace(handle) {
             prev.cancel.cancel();
-            self.digital_agent_cancel_metrics.increment(DigitalAgentCancelReason::ReRegister);
+            self.digital_agent_cancel_metrics
+                .increment(DigitalAgentCancelReason::ReRegister);
         }
     }
 
-    pub async fn cancel_digital_agent(
-        &self,
-        session_id: &str,
-        reason: DigitalAgentCancelReason,
-    ) {
+    pub async fn cancel_digital_agent(&self, session_id: &str, reason: DigitalAgentCancelReason) {
         if let Some(arc) = self.inner.read().await.get(session_id).cloned() {
             let mut state = arc.write().await;
 
@@ -287,20 +280,22 @@ impl SessionStore {
     ) -> bool {
         if let Some(arc) = self.inner.read().await.get(session_id).cloned() {
             let mut state = arc.write().await;
-            
+
             // Clean up old timestamps
-            state.nova_call_timestamps.retain(|&t| now - t < burst_window_s);
-            
+            state
+                .nova_call_timestamps
+                .retain(|&t| now - t < burst_window_s);
+
             if let Some(&last) = state.nova_call_timestamps.last() {
                 if now - last < min_gap_s {
                     return false;
                 }
             }
-            
+
             if state.nova_call_timestamps.len() >= burst_limit {
                 return false;
             }
-            
+
             state.nova_call_timestamps.push(now);
             state.nova_call_total += 1;
             true

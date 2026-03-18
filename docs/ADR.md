@@ -1,5 +1,5 @@
 # ADR.md — Architecture Decision Records
-### Apollos UI Navigator · v0.2.0
+### Apollos UI Navigator · v0.3.2
 
 > **Mục đích file này:** Ghi lại *tại sao* hệ thống được thiết kế như vậy.
 > Không phải *cái gì* (CONTRACTS.md) hay *như thế nào* (BLUEPRINT.md) — mà là *tại sao*.
@@ -43,6 +43,8 @@
 - [ADR-038](#adr-038) — Remove Python/Gemini from Dockerfile
 - [ADR-039](#adr-039) — DigitalOcean App Platform Spec (.do/app.yaml)
 - [ADR-040](#adr-040) — Default DEMO_MODE=1 in .env.example
+- [ADR-041](#adr-041) — Shared StatusBus for Demo SSE and DigitalAgent
+- [ADR-042](#adr-042) — Browser-native Web Speech API for English Demo
 
 ---
 
@@ -904,6 +906,8 @@ Exit points cần clear (trong `execute_with_cancel()`):
 | ADR-038 | Remove Python/Gemini from Dockerfile | ✅ | `cleanup` `docker` `do-gradient` |
 | ADR-039 | DigitalOcean App Platform Spec (.do/app.yaml) | ✅ | `deployment` `do-app-platform` `hackathon` |
 | ADR-040 | Default DEMO_MODE=1 in .env.example | ✅ | `demo` `ux` `onboarding` |
+| ADR-041 | Shared StatusBus for Demo SSE and DigitalAgent | ✅ | `demo` `sse` `transport` `correctness` |
+| ADR-042 | Browser-native Web Speech API for English Demo | ✅ | `demo` `voice` `web` `delivery-speed` |
 
 ---
 
@@ -1939,3 +1943,99 @@ spec:
 - Developer clone repo → copy .env.example → `cargo run` → demo endpoints hoạt động ngay
 - Câu `DEMO_MODE=1` rõ ràng là default cho hackathon demo context
 - Production deployment sẽ override bằng App Platform env vars (ADR-039 explicitly sets `DEMO_MODE=1`)
+
+---
+
+## ADR-041 — Shared StatusBus for Demo SSE and DigitalAgent
+
+**Status:** ✅ ACCEPTED
+**Date:** 2026-03-18
+**Tags:** `demo` `sse` `transport` `correctness`
+
+### Context
+
+`DigitalAgent::emit_status()` gửi narration/question qua `WebSocketRegistry::send_live()`.
+Tuy nhiên demo path hiện tại chỉ expose `/demo/status` SSE và không có websocket registration flow.
+
+Hệ quả: agent vẫn chạy, nhưng browser demo/SSE subscriber chỉ thấy một phần status do `demo_handler` tự broadcast ở đầu/cuối task. Các status trong loop như:
+
+- "Analyzing your request..."
+- "Question: ..."
+- narration từng action
+- safe mode loop
+
+không đi tới demo client. Đây là **transport mismatch** giữa implementation và demo contract.
+
+### Options Considered
+
+#### Option A: Rewire toàn bộ demo sang WebSocket
+
+**Loại vì:** Tốn thêm route/auth/ownership flow, vượt quá phạm vi fix cần thiết cho hackathon demo.
+
+#### Option B: Giữ SSE demo, thêm một shared `StatusBus` để `DigitalAgent` và demo SSE cùng dùng ← **CHOSEN**
+
+Status messages được publish vào cùng một replay-backed broadcast channel. `/demo/status` subscribe channel này; `DigitalAgent` publish trực tiếp vào đó và vẫn có thể giữ `WebSocketRegistry` cho production/live-client path.
+
+### Decision
+
+> **Thêm `status_bus.rs` làm shared replay-backed status transport cho demo.**
+>
+> `DigitalAgent` publish status vào `StatusBus` trước, sau đó optional gửi `AssistantText` qua `WebSocketRegistry` nếu có live socket registered.
+
+### Consequences
+
+- Demo SSE nhận đủ narration/question/final status trong runtime thật
+- Replay semantics được tập trung ở một nơi thay vì nằm rải trong demo handler
+- `WebSocketRegistry` vẫn tồn tại cho production path, nhưng không còn là single source of truth cho demo status
+- Fix này mở đường cho web TTS vì browser chỉ cần subscribe `/demo/status`
+
+---
+
+## ADR-042 — Browser-native Web Speech API for English Demo
+
+**Status:** ✅ ACCEPTED
+**Date:** 2026-03-18
+**Tags:** `demo` `voice` `web` `delivery-speed`
+
+### Context
+
+Yêu cầu mới:
+
+- Deadline gấp
+- Chỉ cần web demo trước
+- Android/iOS làm sau
+- Ưu tiên tiếng Anh để giảm rủi ro voice quality/support
+
+Repo hiện tại là `text-in / text-out`:
+
+- `/demo/start_task` nhận `intent: string`
+- `/demo/user_reply` nhận `answer: string`
+- `/demo/status` stream `string`
+
+Nếu đưa cloud STT/TTS vào backend ngay bây giờ, hệ thống sẽ phải thêm audio transport, session lifecycle cho mic/speaker, barge-in/interruption, buffering, và realtime orchestration mới.
+
+### Options Considered
+
+#### Option A: Cloud STT/TTS qua backend (Google/Azure/OpenAI Realtime)
+
+**Loại vì:** Quá nhiều contract mới cho scope demo hiện tại.
+
+#### Option B: Browser-native Web Speech API + English-only demo ← **CHOSEN**
+
+Speech recognition và speech synthesis chạy ngay trong browser demo shell.
+Server giữ nguyên contract text-based hiện có.
+
+#### Option C: Tự build custom audio websocket pipeline
+
+**Loại vì:** Overkill cho hackathon/demo timeline.
+
+### Decision
+
+> **Thêm `GET /demo` trả về HTML demo shell dùng browser-native `SpeechRecognition` / `webkitSpeechRecognition` và `speechSynthesis`, với `en-US` làm ngôn ngữ demo mặc định.**
+
+### Consequences
+
+- Có voice demo nhanh mà không thay đổi kiến trúc backend sang audio-first
+- Demo path phụ thuộc browser support, thực tế nên demo bằng Chrome
+- Text path vẫn tồn tại làm fallback khi browser không hỗ trợ speech recognition
+- Mobile/native voice stack được defer sang phase sau thay vì gắn chắp vá vào backend demo

@@ -1,6 +1,12 @@
 /target
 .env
+.env.*
+!.env.example
 *.env.local
 *.env.production
+*.pem
+*.key
+*.crt
+secrets/
 **/*.rs.bk
 Cargo.lock.bk

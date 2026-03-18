@@ -1,5 +1,5 @@
 # CONTRACTS.md — Schema Registry
-### Apollos UI Navigator · v0.3.0
+### Apollos UI Navigator · v0.3.2
 
 > **Nguyên tắc vàng:** Mọi type, schema, enum, constant được define **MỘT LẦN DUY NHẤT** tại đây.
 > BLUEPRINT.md và code **reference** — không redefine, không copy, không paraphrase.
@@ -211,7 +211,7 @@ BackendToClientMessage ::
   | HumanHelpSession { message: Ref<HumanHelpSessionMessage> } // Human handoff session
 ```
 
-**Dùng ở:** `WebSocketRegistry`, demo endpoints
+**Dùng ở:** `WebSocketRegistry`
 
 ### DigitalResult
 
@@ -283,7 +283,7 @@ RANGE: text.length ≤ 120 — truncated at browser inspection
 
 ### AssistantTextMessage
 
-> Message từ assistant đến user qua WebSocket/SSE
+> Message typed từ assistant đến user qua live transport typed payload (WebSocket path)
 
 ```
 AssistantTextMessage :: {
@@ -385,7 +385,7 @@ DigitalAgentHandle :: {
 DigitalSessionContext :: {
   motion_state          :: Ref<MotionState>                          // User motion state
   session_id            :: string                                    // UUID v4
-  ws_registry           :: Ref<WebSocketRegistry>                    // WebSocket broadcast
+  ws_registry           :: Ref<WebSocketRegistry>                    // Optional live WebSocket broadcast
   fallback              :: Ref<HumanFallbackService>                 // Human escalation service
   sessions              :: Ref<SessionStore>                         // Session persistence
   reply_tx_slot         :: Arc<Mutex<Option<UserReplyTx>>>           // Channel cho user reply
@@ -424,7 +424,8 @@ OUTPUT :: Ref<DigitalResult>
 
 SIDE EFFECTS:
   - Browser automation  : Mở Chrome, navigate, click, type
-  - WebSocket broadcast : Gửi AssistantText messages
+  - Status bus publish  : Gửi demo status strings vào shared replay-backed stream
+  - WebSocket broadcast : Gửi AssistantText messages nếu có live socket registered
   - Session state       : Cập nhật nova call timestamps
   - External calls      : DO Gradient AI inference API
 
@@ -437,7 +438,7 @@ PRE-CONDITIONS:
 POST-CONDITIONS:
   - browser_executor_slot được clear về None (ADR-017)
   - Session state được cập nhật
-  - WebSocket đã broadcast kết quả cuối cùng
+  - Demo status stream đã nhận được narration/question/final status
 
 IDEMPOTENT: KHÔNG — vì có side effects (browser actions, API calls)
 ```
@@ -533,6 +534,56 @@ POST-CONDITIONS:
   - reply_tx_slot được clear về None sau khi send
 
 IDEMPOTENT: KHÔNG — timing matters, oneshot channel consumed sau khi send
+```
+
+---
+
+### demo/status
+
+> Demo SSE endpoint để stream status realtime có replay buffer
+
+```
+INPUT  :: none
+
+OUTPUT :: stream<string>
+
+SIDE EFFECTS:
+  - Replay snapshot : Subscriber mới nhận buffered status messages trước
+  - Live subscribe  : Subscriber tiếp tục nhận status messages mới qua broadcast channel
+
+PRE-CONDITIONS:
+  - DEMO_MODE=1
+
+POST-CONDITIONS:
+  - Không mutate session state
+
+IDEMPOTENT: CÓ — read-only stream endpoint
+```
+
+---
+
+### demo
+
+> Demo web page dùng browser-native speech recognition và speech synthesis
+
+```
+INPUT  :: none
+
+OUTPUT :: text/html
+
+SIDE EFFECTS:
+  - Browser EventSource : Connect tới `/demo/status`
+  - Browser POST        : Gửi request tới `/demo/start_task`, `/demo/user_reply`, `/demo/trigger_hard_stop`
+  - Browser speech APIs : SpeechRecognition/webkitSpeechRecognition và speechSynthesis (demo path only)
+
+PRE-CONDITIONS:
+  - DEMO_MODE=1
+  - Browser nên hỗ trợ Web Speech API để dùng voice path
+
+POST-CONDITIONS:
+  - Không mutate server state cho tới khi user submit intent/reply
+
+IDEMPOTENT: CÓ — serving static demo shell
 ```
 
 ---
@@ -766,3 +817,6 @@ Agent Actions: Verb-first, descriptive
 | v0.3.1 | 2026-03-18 | demo/user_reply | SIDE EFFECT changed: raw `status_tx.send()` → `broadcast_status()` | Không | ADR-034 |
 | v0.3.1 | 2026-03-18 | Dockerfile | REMOVED: `python3-pip`, `google-generativeai` | Không | ADR-038 |
 | v0.3.1 | 2026-03-18 | Files | ADDED: `.do/app.yaml`, `LICENSE` | Không | ADR-039, hackathon |
+| v0.3.2 | 2026-03-18 | execute_with_cancel() | SIDE EFFECTS changed: shared `StatusBus` publish added before optional WebSocket live broadcast | Không | ADR-041 |
+| v0.3.2 | 2026-03-18 | demo/status | ADDED: replay-backed SSE stream contract | Không | ADR-041 |
+| v0.3.2 | 2026-03-18 | demo | ADDED: HTML demo shell contract using browser-native STT/TTS | Không | ADR-042 |

@@ -1,5 +1,5 @@
 # BLUEPRINT.md — Behavior Specification
-### Apollos UI Navigator · v0.3.0
+### Apollos UI Navigator · v0.3.2
 
 > **Mục đích file này:** Mô tả hệ thống *hoạt động như thế nào* — không phải *trông như thế nào*.
 > Schemas đã có trong CONTRACTS.md — file này chỉ **reference**, không redefine.
@@ -28,13 +28,13 @@
 │                  Apollos UI Navigator v0.2                │
 │                                                          │
 │  ┌──────────┐     ┌─────────────┐     ┌──────────────┐  │
-│  │  User    │────▶│DigitalAgent │────▶│ DO Gradient  │  │
-│  │ Intent   │     │             │     │ Llama 3.2    │  │
+│  │ Browser  │────▶│DigitalAgent │────▶│ DO Gradient  │  │
+│  │ Voice UI │     │             │     │ Llama 3.2    │  │
 │  └──────────┘     │ (agentic    │     │ Vision       │  │
 │       ▲           │  loop)      │     └──────────────┘  │
 │       │           └─────────────┘                        │
-│  SSE stream             │                                │
-│  (narration)            ▼                                │
+│  Web Speech API         │                                │
+│  + SSE status           ▼                                │
 │                   ┌──────────────┐                       │
 │                   │ Browser      │                       │
 │                   │ Executor     │                       │
@@ -44,7 +44,7 @@
        ▲ HTTP/SSE                       Chrome window ▶
 ```
 
-**Luồng chính một câu:** User gửi intent → DigitalAgent lặp (screenshot → Llama 3.2 Vision → BrowserExecutor) → Narrate realtime qua SSE
+**Luồng chính một câu:** Browser voice/text demo gửi intent → DigitalAgent lặp (screenshot → Llama 3.2 Vision → BrowserExecutor) → publish status qua shared StatusBus → `/demo/status` SSE → browser đọc status bằng TTS
 
 **Những gì hệ thống này KHÔNG làm:** Physical navigation, obstacle detection, thanh toán tự động — xem ADR-001, ADR-007 để biết lý do.
 
@@ -60,9 +60,10 @@
 | **NovaReasoningClient** | `nova_reasoning_client.rs` | Gọi DO Gradient Llama 3.2 Vision để suy luận action | `Vec<u8>`, `Ref<string>`, `List<string>`, `u32`, `Option<CancellationToken>` | `Ref<AgentAction>` | Không |
 | **BrowserExecutor** | `browser_executor.rs` | Điều khiển Chrome browser qua CDP | `Ref<AgentAction>` | `unit \| Ref<ERR_BROWSER_EXECUTE>` | Có (browser instance) |
     | **SessionStore** | `session.rs` | Quản lý session state và rate limiting | `session_id`, timestamps, call counts | rate limiting decisions | Có (in-memory, consider persistence per ADR-021) |
+| **StatusBus** | `status_bus.rs` | Shared replay-backed status transport cho demo SSE | `string` | `stream<string>` | Có (global broadcast + replay buffer) |
 | **WebSocketRegistry** | `ws_registry.rs` | Broadcast messages đến connected clients | `session_id`, `Ref<BackendToClientMessage>` | `unit` | Có (connections) |
 | **HumanFallbackService** | `human_fallback.rs` | Xử lý escalation đến human assistance | `session_id`, `reason` | `help_link \| unit` | Không |
-
+| **DemoVoicePage** | `demo_handler.rs` | Serve HTML demo shell dùng browser-native STT/TTS | `unit` | `text/html` | Không |
 | **DomContextExtractor** | `browser_executor.rs` | Extract DOM metadata để inject vào Gradient prompt | `Ref<Page>` | `Option<string>` | Không |
 > **Đã xóa:** `SDKBridge` (`scripts/google_genai_sdk_bridge.py`) — removed per ADR-013.
 > Python subprocess không còn được dùng. DO Gradient là sole reasoning engine.
@@ -76,6 +77,25 @@
 
 > Dữ liệu đi qua hệ thống như thế nào — từ input đến output.
 > Mỗi bước: ai làm, dùng operation gì, input/output là schema nào.
+
+### Happy Path — Browser Voice Demo
+
+```
+[0] Browser GET /demo
+      │ output: HTML demo shell
+      │ side effect: init EventSource(/demo/status)
+      │ side effect: init SpeechRecognition/webkitSpeechRecognition + speechSynthesis
+      ▼
+[1] User nói hoặc nhập text trong browser demo
+      │ nếu đang idle  → POST /demo/start_task
+      │ nếu WAITING_USER → POST /demo/user_reply
+      ▼
+[2] Browser nhận status messages từ /demo/status
+      │ rule: replay buffered messages first, then live stream
+      │ rule: mỗi message mới → append log + speechSynthesis.speak(text)
+      ▼
+[3] Hard stop button → POST /demo/trigger_hard_stop
+```
 
 ### Happy Path — Normal Task Execution
 
@@ -94,10 +114,10 @@
       ▼
 [3] DigitalAgent::execute_with_cancel() [starts in background tokio task]
       │ input:  Ref<string>, Ref<CancellationToken>, Ref<DigitalSessionContext>
-      │ side effect: emit_status("🧠 Đang phân tích yêu cầu...")  ← ADR-013
+      │ side effect: emit_status("Analyzing your request...")  ← ADR-013, ADR-041
       │ output: Ref<DigitalResult>
       ▼
-[4] BrowserExecutor::new("https://www.google.com.vn")
+[4] BrowserExecutor::new("https://www.google.com")
       │ side effect: launch Chrome, store in browser_executor_slot
       ▼
 [5] Loop (step 1..=MAX_STEPS):
@@ -148,7 +168,8 @@
 [6] Cleanup: *browser_executor_slot = None (ADR-017)
       └─ result: Ref<DigitalResult>  // ADR-019 (Explicit Error Propagation)
       ▼
-[7] demo_handler broadcasts final status via SSE
+[7] demo_handler publishes final status via StatusBus
+      └─ /demo/status streams replay + live updates to browser demo
 ```
 
 ### Error Path — API Auth Failure
@@ -179,10 +200,10 @@
 [5e-1] DigitalAgent pauses, creates oneshot channel (UserReplyTx/Rx)
          └─ stores tx in ctx.reply_tx_slot
              // ADR-020: Ensure no blocking calls in async context
-[5e-2] SSE broadcast: question to user
+[5e-2] StatusBus publish: "Question: ..."
 [5e-3] HTTP POST /demo/user_reply { answer }
          └─ SessionStore::send_user_reply() → tx.send(answer)
-         └─ broadcast_status("👤 User replied: ...") ← ADR-034 (NOT raw status_tx.send)
+         └─ StatusBus publish: "User replied: ..." ← ADR-034, ADR-041
 [5e-4] tokio::select! rx or cancel or 120s timeout
 [5e-5] history.push("Q: {question} | A: {answer}")
 [5e-6] Continue loop with answer context
@@ -212,11 +233,11 @@ TRANSITIONS:
 
   RUNNING   ──[ask_user]─────────▶  WAITING_USER
              guard: AgentAction::AskUser
-             action: create oneshot channel, broadcast question via SSE
+             action: create oneshot channel, publish question via StatusBus
 
   RUNNING   ──[done]─────────────▶  COMPLETED
              guard: AgentAction::Done
-             action: broadcast summary, clear browser_executor_slot
+             action: publish summary, clear browser_executor_slot
 
   RUNNING   ──[escalate]─────────▶  ESCALATED
              guard: AgentAction::Escalate OR sensitive_guard triggered
@@ -224,7 +245,7 @@ TRANSITIONS:
 
   RUNNING   ──[error]────────────▶  FAILED
              guard: any execution error (browser, API, max_steps)
-             action: broadcast error, clear browser_executor_slot
+             action: publish error, clear browser_executor_slot
 
   RUNNING   ──[cancel]───────────▶  CANCELLED
              guard: CancellationToken triggered
@@ -236,7 +257,7 @@ TRANSITIONS:
 
   WAITING_USER ──[timeout]───────▶  FAILED
                 guard: 120s elapsed (USER_REPLY_TIMEOUT_S)
-                action: broadcast timeout, clear browser_executor_slot
+                action: publish timeout, clear browser_executor_slot
 
   RUNNING   ──[stuck]──────────▶  ESCALATED
              guard: same action_key repeated STUCK_THRESHOLD times (ADR-026)
@@ -275,11 +296,11 @@ SIGNATURE:
 
 PSEUDOCODE:
   // ADR-013: Direct warmup emit — no Python subprocess
-  1. Emit status: "🧠 Đang phân tích yêu cầu..."
-       call emit_status() via SSE/WebSocket
+  1. Emit status: "Analyzing your request..."
+       call emit_status() via StatusBus and optional WebSocket
 
   2. Initialize BrowserExecutor:
-       browser = BrowserExecutor::new("https://www.google.com.vn")
+       browser = BrowserExecutor::new("https://www.google.com")
        nếu failed → return DigitalResult::Failed(ERR_BROWSER_INIT)
        *ctx.browser_executor_slot.lock().await = Some(Arc::new(browser))  // ADR-017, ADR-018 (Resource Cleanup)
 
@@ -875,26 +896,41 @@ COMPLEXITY: O(n) — n = timestamps in window, typically < 10
 
 ---
 
-### WebSocketRegistry
+### StatusBus
 
-**File:** `src/ws_registry.rs`
+**File:** `src/status_bus.rs`
 
-#### Hàm: `broadcast_status()` + `status_stream()`
+#### Hàm: `publish()` + `subscribe()` + `replay_snapshot()`
 
-> **ADR-030:** SSE có replay buffer. Xem pseudocode dưới đây.
+> **ADR-041:** Demo SSE và DigitalAgent dùng chung một shared replay-backed status transport.
 
 ```
-REPLAY_BUFFER :: Arc<Mutex<VecDeque<String>>> — max SSE_REPLAY_BUFFER_SIZE entries
+STATUS_TX            :: broadcast::Sender<String>
+STATUS_REPLAY_BUFFER :: Mutex<VecDeque<String>> — max SSE_REPLAY_BUFFER_SIZE entries
 
-broadcast_status(msg: string) -> unit:
-  1. get_status_tx().send(msg.clone())
-  2. buf = REPLAY_BUFFER.lock()
+publish(msg: string) -> unit:
+  1. STATUS_TX.send(msg.clone())
+  2. buf = STATUS_REPLAY_BUFFER.lock()
   3. nếu buf.len() >= SSE_REPLAY_BUFFER_SIZE: buf.pop_front()
   4. buf.push_back(msg)
 
+replay_snapshot() -> List<string>:
+  1. return STATUS_REPLAY_BUFFER.lock().clone()
+
+subscribe() -> BroadcastReceiver<string>:
+  1. return STATUS_TX.subscribe()
+```
+
+### Demo Status SSE
+
+**File:** `src/demo_handler.rs`
+
+#### Hàm: `status_stream()`
+
+```
 status_stream() -> SSE:
-  1. buffered = REPLAY_BUFFER.lock().clone()
-  2. rx = get_status_tx().subscribe()
+  1. buffered = replay_snapshot()
+  2. rx = subscribe()
   3. replay_stream = iter(buffered).map(|m| Event("history").data(m))
   4. live_stream = BroadcastStream(rx).filter_map(...)
   5. return Sse(replay_stream.chain(live_stream)).keep_alive()
@@ -938,6 +974,27 @@ BACKOFF_503     = fixed 2s
 TIMEOUT         = 30000ms per attempt
 
 // No circuit breaker — simple retry sufficient for hackathon scope
+```
+
+### Browser Web Speech API (Demo Only)
+
+**Dùng ở component:** `DemoVoicePage`
+**Protocol:** Browser-native APIs
+**Language:** `en-US` cho speech recognition và speech synthesis (ADR-042)
+
+```
+SpeechRecognition:
+  - ctor = window.SpeechRecognition || window.webkitSpeechRecognition
+  - lang = "en-US"
+  - interimResults = false
+  - maxAlternatives = 1
+
+speechSynthesis:
+  - speechSynthesis.cancel() trước khi listen hoặc hard-stop
+  - mỗi status message mới → speak(text)
+
+Fallback:
+  - nếu SpeechRecognition không available → disable mic button, giữ text input path
 ```
 
 **Fallback khi unavailable:** `ERR_NOVA_REASONING` → DigitalAgent returns `DigitalResult::Failed`
@@ -1097,4 +1154,10 @@ apollos-ui-navigator/
 // - .do/app.yaml → NEW FILE: DO App Platform deployment spec (ADR-039)
 // - .env.example: DEMO_MODE=1 as default (ADR-040)
 // - LICENSE → NEW FILE: MIT License for hackathon eligibility
+//
+// NEW in v0.3.2:
+// - status_bus.rs added as shared replay-backed status transport (ADR-041)
+// - demo/status rewired to StatusBus replay + live subscribe (ADR-041)
+// - GET /demo added as browser voice shell using Web Speech API (ADR-042)
+// - demo mode user-facing content switched to English; browser starts at google.com (ADR-042)
 ```

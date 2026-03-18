@@ -12,7 +12,9 @@ pub enum MotionState {
 }
 
 impl Default for MotionState {
-    fn default() -> Self { Self::Stationary }
+    fn default() -> Self {
+        Self::Stationary
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,12 +65,12 @@ pub struct ActionTarget {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AgentAction {
-    Click     { target: ActionTarget },
-    Type      { target: ActionTarget, value: String },
-    Navigate  { url: String },
-    Scroll    { direction: String },
-    Wait      { reason: String },
-    Done      { summary: String },
-    Escalate  { reason: String },
-    AskUser   { question: String },
+    Click { target: ActionTarget },
+    Type { target: ActionTarget, value: String },
+    Navigate { url: String },
+    Scroll { direction: String },
+    Wait { reason: String },
+    Done { summary: String },
+    Escalate { reason: String },
+    AskUser { question: String },
 }
