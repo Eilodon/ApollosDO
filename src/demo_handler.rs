@@ -276,10 +276,9 @@ pub async fn status_stream() -> axum::response::Response {
         Err(_) => None,
     });
 
-    // KeepAlive every 5s — keeps curl/browser from thinking the stream died
     let sse = Sse::new(handshake.chain(replay_stream).chain(live_stream)).keep_alive(
         axum::response::sse::KeepAlive::new()
-            .interval(Duration::from_secs(5))
+            .interval(Duration::from_secs(1))
             .text("keep-alive"),
     );
 
@@ -287,7 +286,7 @@ pub async fn status_stream() -> axum::response::Response {
     (
         [
             ("X-Accel-Buffering", "no"),
-            ("Cache-Control", "no-cache"),
+            ("Cache-Control", "no-cache, no-transform"),
             ("X-Content-Type-Options", "nosniff"),
         ],
         sse,

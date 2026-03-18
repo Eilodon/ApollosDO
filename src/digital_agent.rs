@@ -448,18 +448,34 @@ impl DigitalAgent {
                 }
             }
 
-            // ── Execute action với cancel race ────────────────────────────
-            let exec_result = tokio::select! {
+            // ── Execute action với cancel race và retry ───────────────────
+            let mut exec_result = tokio::select! {
                 _ = cancel.cancelled() => {
                     return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted while executing the browser action.".into()));
                 }
                 result = browser.execute(&action) => result
             };
 
+            // [STABILITY] Retry once if execution failed (e.g. node not visible yet)
+            if exec_result.is_err() {
+                tracing::warn!(
+                    session_id = %ctx.session_id,
+                    error = ?exec_result.as_ref().err(),
+                    "Execution failed, retrying once in 1s..."
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                exec_result = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Interrupted during retry.".into()));
+                    }
+                    result = browser.execute(&action) => result
+                };
+            }
+
             if let Err(e) = exec_result {
                 return_result!(
                     ctx.browser_executor_slot,
-                    DigitalResult::Failed(format!("Browser execution failed: {}", e))
+                    DigitalResult::Failed(format!("Browser execution failed after retry: {}", e))
                 );
             }
 

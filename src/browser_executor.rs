@@ -139,14 +139,33 @@ impl BrowserExecutor {
 
         match action {
             AgentAction::Click { target } => {
-                self.find_resilient(&page, target).await?.click().await?;
+                let el = self.find_resilient(&page, target).await?;
+                // Robustness: scroll and try standard click, fallback to evaluate if needed
+                let _ = el.scroll_into_view().await;
+                if let Err(e) = el.click().await {
+                    warn!(
+                        "Standard click failed, attempting JS-based click fallback: {}",
+                        e
+                    );
+                    el.call_js_fn("function() { this.click(); }", true).await?;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 Ok("Clicked element".to_string())
             }
             AgentAction::Type { target, value } => {
                 let el = self.find_resilient(&page, target).await?;
+                let _ = el.scroll_into_view().await;
                 el.click().await?;
-                el.type_str(value).await?;
+
+                if value.ends_with('\n') {
+                    let clean_value = value.trim_end_matches('\n');
+                    el.type_str(clean_value).await?;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    el.type_str("\n").await?;
+                } else {
+                    el.type_str(value).await?;
+                }
+
                 Ok(format!("Typed: {}", value))
             }
             AgentAction::Navigate { url } => {
