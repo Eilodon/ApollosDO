@@ -5,12 +5,10 @@ async fn main() -> anyhow::Result<()> {
     // Load .env if present
     let _ = dotenvy::dotenv();
 
+    let rust_log = effective_rust_log_filter();
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                "info,apollos_ui_navigator=debug,chromiumoxide::handler=error,chromiumoxide::conn=error".to_string()
-            }),
-        ))
+        .with(tracing_subscriber::EnvFilter::new(rust_log))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -37,4 +35,21 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, router).await?;
 
     Ok(())
+}
+
+fn effective_rust_log_filter() -> String {
+    let mut directives = vec![std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())];
+    let joined = directives[0].clone();
+
+    if !joined.contains("apollos_ui_navigator=") {
+        directives.push("apollos_ui_navigator=debug".to_string());
+    }
+    if !joined.contains("chromiumoxide::handler=") {
+        directives.push("chromiumoxide::handler=error".to_string());
+    }
+    if !joined.contains("chromiumoxide::conn=") {
+        directives.push("chromiumoxide::conn=error".to_string());
+    }
+
+    directives.join(",")
 }
