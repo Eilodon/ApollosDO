@@ -20,7 +20,7 @@ services:
         value: "https://inference.do-ai.run/v1/chat/completions"
       - key: BROWSER_AGENT_MODEL
         scope: RUN_TIME
-        value: "llama3.2-vision"
+        value: "llama3.3-70b-instruct"
       - key: DEMO_MODE
         scope: RUN_TIME
         value: "1"

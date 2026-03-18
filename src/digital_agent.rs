@@ -246,12 +246,35 @@ impl DigitalAgent {
             }
 
             // ── ADR-031: Extract DOM context for hybrid navigation ────────
+            let page_context = match browser.extract_page_context().await {
+                Ok(ctx_str) => Some(ctx_str),
+                Err(e) => {
+                    tracing::debug!(
+                        session_id = %ctx.session_id,
+                        "Page context extraction failed: {}",
+                        e
+                    );
+                    None
+                }
+            };
             let dom_context = match browser.extract_dom_context().await {
                 Ok(ctx_str) => Some(ctx_str),
                 Err(e) => {
-                    tracing::debug!(session_id = %ctx.session_id, "DOM context extraction failed: {} — using vision only", e);
+                    tracing::debug!(
+                        session_id = %ctx.session_id,
+                        "DOM context extraction failed: {}",
+                        e
+                    );
                     None
                 }
+            };
+            let browser_context = match (page_context, dom_context) {
+                (Some(page), Some(dom)) => {
+                    Some(format!("{}\n[Interactive elements]\n{}", page, dom))
+                }
+                (Some(page), None) => Some(page),
+                (None, Some(dom)) => Some(format!("[Interactive elements]\n{}", dom)),
+                (None, None) => None,
             };
 
             // ── Gradient call with cancel race — CRITICAL ───────────────────
@@ -265,7 +288,7 @@ impl DigitalAgent {
                 result = self.reasoning.next_action_with_cancel(
                     &screenshot, intent, &dialogue_history, &step_history, step,
                     Some(&cancel),
-                    dom_context.as_deref(),
+                    browser_context.as_deref(),
                 ) => {
                     result
                 }

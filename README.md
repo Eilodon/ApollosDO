@@ -12,7 +12,7 @@ At a glance
 -----------
 User input        : voice or text
 Primary interface : browser voice demo at /demo
-AI engine         : DigitalOcean Gradient AI (llama3.2-vision)
+AI engine         : DigitalOcean Gradient AI (llama3.3-70b-instruct)
 Core loop         : screenshot -> reason -> validate -> execute -> narrate
 Safety boundary   : hard stop + ambiguity handling + human escalation
 Deploy target     : DigitalOcean App Platform
@@ -103,7 +103,7 @@ DigitalOcean Gradient AI is used as the core reasoning engine in the live browse
 
 Apollos DO currently uses:
 
-- `llama3.2-vision` via the DigitalOcean Gradient inference endpoint
+- `llama3.3-70b-instruct` via the DigitalOcean Gradient inference endpoint
 - Rust backend orchestration around the Gradient call
 - DigitalOcean App Platform deployment spec in [.do/app.yaml](./.do/app.yaml)
 
@@ -168,6 +168,13 @@ The current hackathon scope focuses on a web demo first.
 ---
 
 ## Demo
+
+### Live demo
+
+Public deployment:
+
+- `https://apollos-ui-navigator-7qfxx.ondigitalocean.app/demo`
+- health check: `https://apollos-ui-navigator-7qfxx.ondigitalocean.app/healthz`
 
 ### Browser voice demo
 
@@ -252,7 +259,7 @@ See [walkthrough.md](./walkthrough.md) for the judge-facing walkthrough and [doc
            ▼
 ┌──────────────────────────────────────┐
 │ DigitalOcean Gradient AI             │
-│ llama3.2-vision                      │
+│ llama3.3-70b-instruct                │
 │ returns structured next action       │
 └──────────────────────────────────────┘
 ```
@@ -289,7 +296,7 @@ Apollos DO uses a safety-first design:
 | Web framework | Axum |
 | Async runtime | Tokio |
 | Browser automation | chromiumoxide |
-| AI reasoning | DigitalOcean Gradient AI (`llama3.2-vision`) |
+| AI reasoning | DigitalOcean Gradient AI (`llama3.3-70b-instruct`) |
 | Deployment target | DigitalOcean App Platform |
 | Frontend demo | HTML + browser Web Speech API |
 
@@ -424,7 +431,7 @@ Prepared supporting materials:
 Manual assets still to attach before submission:
 
 - public demo video URL
-- optional live deployed demo URL
+- live deployed demo URL: `https://apollos-ui-navigator-7qfxx.ondigitalocean.app/demo`
 - polished screenshots or hero images from the running product
 
 ---

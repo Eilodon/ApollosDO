@@ -22,6 +22,7 @@ pub struct NovaReasoningClient {
 }
 
 const STEP_HISTORY_WINDOW: usize = 5;
+const DEFAULT_BROWSER_AGENT_MODEL: &str = "llama3.3-70b-instruct";
 
 impl NovaReasoningClient {
     pub async fn new() -> anyhow::Result<Self> {
@@ -32,8 +33,16 @@ impl NovaReasoningClient {
             )
         })?;
 
-        let model =
-            std::env::var("BROWSER_AGENT_MODEL").unwrap_or_else(|_| "llama3.2-vision".to_string());
+        let requested_model = std::env::var("BROWSER_AGENT_MODEL")
+            .unwrap_or_else(|_| DEFAULT_BROWSER_AGENT_MODEL.to_string());
+        let model = normalize_browser_agent_model(&requested_model);
+        if model != requested_model {
+            tracing::warn!(
+                requested_model = %requested_model,
+                resolved_model = %model,
+                "Unsupported browser-agent model requested; falling back to a Gradient-supported model"
+            );
+        }
 
         // DO Gradient inference endpoint (OpenAI-compatible)
         let endpoint = std::env::var("GRADIENT_ENDPOINT")
@@ -131,35 +140,51 @@ impl NovaReasoningClient {
             intent, step, history_ctx, dom_section
         );
 
-        // Encode screenshot
-        let b64 = general_purpose::STANDARD.encode(screenshot_png);
-
-        let request_body = serde_json::json!({
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": format!("data:image/png;base64,{}", b64)
+        let request_body = if model_supports_image_input(&self.model) {
+            let b64 = general_purpose::STANDARD.encode(screenshot_png);
+            serde_json::json!({
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:image/png;base64,{}", b64)
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": user_text
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": user_text
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 256,
-            "temperature": 0.1
-        });
+                        ]
+                    }
+                ],
+                "max_tokens": 256,
+                "temperature": 0.1
+            })
+        } else {
+            serde_json::json!({
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_text
+                    }
+                ],
+                "max_tokens": 256,
+                "temperature": 0.1
+            })
+        };
 
         // ADR-014: Retry loop with error classification
         let mut attempt: u32 = 0;
@@ -304,6 +329,20 @@ impl NovaReasoningClient {
             &parsed_str[..parsed_str.len().min(200)]
         ))
     }
+}
+
+fn normalize_browser_agent_model(requested: &str) -> String {
+    match requested {
+        "llama3.2-vision" => DEFAULT_BROWSER_AGENT_MODEL.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn model_supports_image_input(model: &str) -> bool {
+    matches!(
+        model,
+        "openai-gpt-4o" | "openai-gpt-4o-mini" | "openai-gpt-4.1"
+    )
 }
 
 #[cfg(test)]

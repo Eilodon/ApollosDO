@@ -305,4 +305,43 @@ impl BrowserExecutor {
 
         Ok(context)
     }
+
+    /// Compact page summary for text-only reasoning models.
+    pub async fn extract_page_context(&self) -> anyhow::Result<String> {
+        let page = self.page.lock().await;
+
+        let js = r#"
+            (function() {
+                const title = (document.title || '').trim();
+                const url = location.href;
+                const headings = Array.from(document.querySelectorAll('h1, h2, h3'))
+                    .map((el) => (el.innerText || '').trim())
+                    .filter(Boolean)
+                    .slice(0, 6)
+                    .join(' | ');
+                const bodyText = (document.body?.innerText || '')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 1200);
+
+                return [
+                    `URL: ${url}`,
+                    `Title: ${title || '(untitled page)'}`,
+                    headings ? `Headings: ${headings}` : '',
+                    bodyText ? `Visible text: ${bodyText}` : '',
+                ]
+                    .filter(Boolean)
+                    .join('\n');
+            })()
+        "#;
+
+        let result = page.evaluate(js).await?;
+        let context = result.into_value::<String>().unwrap_or_default();
+
+        if context.is_empty() {
+            return Err(anyhow::anyhow!("No page context available"));
+        }
+
+        Ok(context)
+    }
 }

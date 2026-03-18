@@ -47,7 +47,7 @@ Apollos DO is built in Rust with:
 - Axum for the web server
 - Tokio for async orchestration
 - chromiumoxide for browser automation through Chrome DevTools Protocol
-- DigitalOcean Gradient AI with `llama3.2-vision` for screenshot-based reasoning
+- DigitalOcean Gradient AI with `llama3.3-70b-instruct` for browser reasoning grounded in live DOM and page context
 - DigitalOcean App Platform deployment spec in `.do/app.yaml`
 - browser-native Web Speech API for the voice demo
 
@@ -74,7 +74,7 @@ We also added:
 
 DigitalOcean Gradient AI is the central reasoning engine in Apollos DO.
 
-We use the Gradient inference endpoint with `llama3.2-vision` to interpret screenshots and decide the next browser action. Every meaningful browser step depends on Gradient AI output. This is not a cosmetic integration or side feature; it is the decision-making core of the product.
+We use the Gradient inference endpoint with `llama3.3-70b-instruct` to reason over live page context and decide the next browser action. Every meaningful browser step depends on Gradient AI output. This is not a cosmetic integration or side feature; it is the decision-making core of the product.
 
 DigitalOcean App Platform is also part of the deployment story through the included app spec.
 
@@ -131,7 +131,7 @@ Apollos DO aims to restore autonomy in one of the most frustrating accessibility
 
 ## Demo URL
 
-`[ADD LIVE DEMO URL IF AVAILABLE]`
+`https://apollos-ui-navigator-7qfxx.ondigitalocean.app/demo`
 
 ---
 

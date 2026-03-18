@@ -123,12 +123,23 @@ pub async fn start_task(
 
         match &result {
             DigitalResult::Done(summary) => {
+                tracing::info!(
+                    session_id = DEMO_SESSION_ID,
+                    "Demo task completed: {}",
+                    summary
+                );
                 status_bus::publish(format!("Done: {}", summary));
             }
             DigitalResult::NeedHuman(reason) => {
+                tracing::warn!(
+                    session_id = DEMO_SESSION_ID,
+                    "Demo task escalated to human support: {}",
+                    reason
+                );
                 status_bus::publish(format!("Escalating to human support: {}", reason));
             }
             DigitalResult::Failed(err) => {
+                tracing::error!(session_id = DEMO_SESSION_ID, "Demo task failed: {}", err);
                 status_bus::publish(format!("Failed: {}", err));
             }
         }
