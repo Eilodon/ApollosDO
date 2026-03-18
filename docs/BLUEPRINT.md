@@ -333,7 +333,7 @@ PSEUDOCODE:
        start = Instant::now()
        action = tokio::select! {
            _ = cancel.cancelled() => {clear; return Failed("Cancelled during reasoning")}
-           result = reasoning.next_action_with_cancel(screenshot, intent, &dialogue_history, &step_history, step, Some(&cancel)) => result
+           result = reasoning.next_action_with_cancel(screenshot, intent, &history, step, Some(&cancel)) => result
        }
        ctx.sessions.record_nova_call(start.elapsed().as_millis())
        nếu Err(e) → {clear; return Failed(ERR_NOVA_REASONING)}
@@ -361,8 +361,7 @@ PSEUDOCODE:
                    Ok(ans) = rx => ans
                    _ = sleep(USER_REPLY_TIMEOUT_S) => {clear; return Failed("Reply timeout")}
                }
-               dialogue_history.push(format!("[User] Q: {} | A: {}", question, answer))
-               nếu dialogue_history.len() > 10: dialogue_history.remove(0)
+               history.push(format!("[User] Q: {} | A: {}", question, answer))
                emit_status(format!("👤 {}", answer))
                continue
 
@@ -387,7 +386,7 @@ PSEUDOCODE:
        // URL validation for Navigate actions — ADR-027
        nếu action is Navigate { url }:
            match validate_navigate_url(url):
-               NavigateDecision::Block(reason) → {step_history.push("BLOCKED..."); continue}
+               NavigateDecision::Block(reason) → {clear; return Failed(ERR_NAVIGATE_BLOCKED)}
                NavigateDecision::Escalate(reason) → {clear; return NeedHuman(reason)}
                NavigateDecision::Allow → {}
 
