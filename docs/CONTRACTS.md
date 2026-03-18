@@ -445,7 +445,7 @@ IDEMPOTENT: KHÔNG — vì có side effects (browser actions, API calls)
 > DO Gradient AI vision reasoning call
 
 ```
-INPUT  :: screenshot: Vec<u8>, intent: string, history: List<string>, step: u32
+INPUT  :: screenshot: Vec<u8>, intent: string, dialogue_history: List<string>, step_history: List<string>, step: u32
           (next_action_with_cancel nhận thêm: cancel: Option<Ref<CancellationToken>>)
 
 OUTPUT :: Ref<AgentAction>
@@ -591,8 +591,6 @@ IDEMPOTENT: KHÔNG — side effect khi allowed (push timestamp)
 | `ERR_SESSION_NOT_FOUND` | 404 | `"Session không tồn tại: {session_id}"` | `session_id` | Invalid session ID |
 | `ERR_RATE_LIMITED` | 429 | `"Gradient rate limited — đã retry 3 lần"` | `attempt` | DO Gradient 429 sau max retries (ADR-014) |
 | `ERR_CANCELLED` | 499 | `"Bị gián đoạn: {reason}"` | `reason` | CancellationToken triggered |
-| `ERR_STUCK_LOOP` | 409 | `"Agent bị kẹt: {action_key} lặp {n} lần"` | `action_key`, `n` | Same action repeated STUCK_THRESHOLD times (ADR-026) |
-| `ERR_NAVIGATE_BLOCKED` | 403 | `"URL bị chặn: {reason}"` | `url`, `reason` | Blocked protocol or local IP (ADR-027) |
 
 > **Error format chuẩn:**
 > ```
