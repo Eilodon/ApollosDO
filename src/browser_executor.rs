@@ -47,8 +47,8 @@ impl BrowserExecutor {
         let builder = BrowserConfig::builder()
             .chrome_executable(&chrome_path)
             .window_size(1280, 800)
+            .no_sandbox()
             // Required in any container environment:
-            .arg("--no-sandbox") // no setuid sandbox in containers
             .arg("--disable-gpu") // không có GPU
             .arg("--disable-dev-shm-usage") // /dev/shm limited trong container
             // Demo: Chrome window ở góc trên trái, không overlap terminal
