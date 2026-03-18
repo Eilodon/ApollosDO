@@ -1,4 +1,3 @@
-use chromiumoxide::browser::HeadlessMode;
 use chromiumoxide::element::Element;
 use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures::StreamExt;
@@ -44,16 +43,9 @@ impl BrowserExecutor {
             .to_lowercase()
             != "false";
 
-        let headless_mode = if headless {
-            HeadlessMode::New
-        } else {
-            HeadlessMode::False
-        };
-
         // [CRITICAL] Required flags for container deployments (DO App Platform):
-        let config = BrowserConfig::builder()
+        let builder = BrowserConfig::builder()
             .chrome_executable(&chrome_path)
-            .headless_mode(headless_mode)
             .window_size(1280, 800)
             // Required in any container environment:
             .arg("--no-sandbox") // no setuid sandbox in containers
@@ -63,9 +55,15 @@ impl BrowserExecutor {
             .arg("--window-position=0,0")
             // Optional nhưng nên có:
             .arg("--disable-software-rasterizer")
-            .arg("--disable-extensions")
-            .build()
-            .map_err(|e| anyhow::anyhow!(e))?;
+            .arg("--disable-extensions");
+
+        let config = if headless {
+            builder.new_headless_mode()
+        } else {
+            builder.with_head()
+        }
+        .build()
+        .map_err(|e| anyhow::anyhow!(e))?;
 
         let (browser, mut handler) = Browser::launch(config).await?;
 
