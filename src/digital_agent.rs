@@ -268,7 +268,7 @@ impl DigitalAgent {
                     None
                 }
             };
-            let browser_context = match (page_context, dom_context) {
+            let browser_context = match (page_context.clone(), dom_context) {
                 (Some(page), Some(dom)) => {
                     Some(format!("{}\n[Interactive elements]\n{}", page, dom))
                 }
@@ -276,6 +276,19 @@ impl DigitalAgent {
                 (None, Some(dom)) => Some(format!("[Interactive elements]\n{}", dom)),
                 (None, None) => None,
             };
+
+            if let Some(done_summary) =
+                maybe_complete_simple_task(intent, page_context.as_deref(), step_history.as_slice())
+            {
+                tracing::info!(
+                    session_id = %ctx.session_id,
+                    step,
+                    "Completed via local heuristic: {}",
+                    done_summary
+                );
+                emit_status(format!("Done: {}", done_summary)).await;
+                return_result!(ctx.browser_executor_slot, DigitalResult::Done(done_summary));
+            }
 
             // ── Gradient call with cancel race — CRITICAL ───────────────────
             // API call có thể mất 2–5s. Cancel PHẢI interrupt tại đây.
@@ -586,6 +599,67 @@ fn compute_action_key(action: &AgentAction) -> String {
         AgentAction::Escalate { .. } => "escalate".to_string(),
         AgentAction::AskUser { .. } => "ask_user".to_string(),
     }
+}
+
+fn maybe_complete_simple_task(
+    intent: &str,
+    page_context: Option<&str>,
+    step_history: &[String],
+) -> Option<String> {
+    let page_context = page_context?;
+    let current_url = extract_page_context_field(page_context, "URL")?;
+    let current_title = extract_page_context_field(page_context, "Title")
+        .filter(|title| !title.eq_ignore_ascii_case("(untitled page)"))?;
+
+    let normalized_intent = intent.to_lowercase();
+    let asks_for_title = normalized_intent.contains("page title")
+        || (normalized_intent.contains("title") && normalized_intent.contains("page"))
+        || normalized_intent.contains("what page loaded");
+
+    if asks_for_title && !is_bootstrap_page(&current_url) {
+        return Some(format!("The page title is '{}'.", current_title));
+    }
+
+    let recent_navigations: Vec<&str> = step_history
+        .iter()
+        .rev()
+        .filter_map(|step| step.split("Navigate { url: \"").nth(1))
+        .filter_map(|rest| rest.split("\"").next())
+        .take(3)
+        .collect();
+
+    if recent_navigations.len() >= 2
+        && recent_navigations
+            .iter()
+            .all(|url| *url == recent_navigations[0])
+        && normalize_url_for_compare(recent_navigations[0])
+            == normalize_url_for_compare(&current_url)
+        && !is_bootstrap_page(&current_url)
+    {
+        return Some(format!(
+            "Opened {}. Current page title: '{}'.",
+            current_url, current_title
+        ));
+    }
+
+    None
+}
+
+fn extract_page_context_field<'a>(page_context: &'a str, key: &str) -> Option<String> {
+    page_context
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_url_for_compare(url: &str) -> String {
+    url.trim_end_matches('/').to_lowercase()
+}
+
+fn is_bootstrap_page(url: &str) -> bool {
+    let lowered = normalize_url_for_compare(url);
+    lowered.contains("google.com")
 }
 
 // ── ADR-027: Navigate URL validation ────────────────────────────────────
@@ -1045,5 +1119,39 @@ mod tests {
         };
         let reasons = sensitive_reasons_for_action(&action, Some(&snapshot));
         assert!(reasons.contains("mat_khau"));
+    }
+
+    #[test]
+    fn heuristic_completes_title_requests() {
+        let page_context =
+            "URL: https://www.example.com\nTitle: Example Domain\nVisible text: Example Domain";
+        let summary = maybe_complete_simple_task(
+            "Open example.com and tell me the page title in English.",
+            Some(page_context),
+            &[],
+        );
+        assert_eq!(
+            summary.as_deref(),
+            Some("The page title is 'Example Domain'.")
+        );
+    }
+
+    #[test]
+    fn heuristic_completes_repeated_navigate_when_page_loaded() {
+        let page_context =
+            "URL: https://www.example.com\nTitle: Example Domain\nVisible text: Example Domain";
+        let step_history = vec![
+            "Step 1: Navigate { url: \"https://www.example.com\" }".to_string(),
+            "Step 2: Navigate { url: \"https://www.example.com\" }".to_string(),
+        ];
+        let summary = maybe_complete_simple_task(
+            "Open example.com for me.",
+            Some(page_context),
+            &step_history,
+        );
+        assert_eq!(
+            summary.as_deref(),
+            Some("Opened https://www.example.com. Current page title: 'Example Domain'.")
+        );
     }
 }

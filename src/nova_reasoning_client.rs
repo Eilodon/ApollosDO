@@ -101,7 +101,10 @@ impl NovaReasoningClient {
             "\"summary\":\"result in Vietnamese\",\"question\":\"question for user\"}\n",
             "RULES: ask_user FIRST if intent is ambiguous. ",
             "escalate on payment/OTP/password. done when task complete. ",
-            "wait after every navigate/click that loads a new page."
+            "wait after every navigate/click that loads a new page. ",
+            "Never navigate to the same URL if the current page URL already matches it. ",
+            "If the current page already contains enough information to satisfy the intent, return done immediately. ",
+            "After a successful page load, prefer done/click/type/scroll/wait over repeating the same navigate action."
         );
 
         // ADR-029: Smart History: Persistent Dialogue + Truncated Steps

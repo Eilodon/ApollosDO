@@ -7,8 +7,9 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "info,apollos_ui_navigator=debug".to_string()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| {
+                "info,apollos_ui_navigator=debug,chromiumoxide::handler=error,chromiumoxide::conn=error".to_string()
+            }),
         ))
         .with(tracing_subscriber::fmt::layer())
         .init();
