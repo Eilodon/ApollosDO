@@ -134,6 +134,10 @@ BROWSER_HEADLESS :: boolean = true
 
 CHROME_EXECUTABLE :: string? = null
   // Lý do: Đường dẫn cụ thể đến Chrome (nếu có, auto-detect nếu null)
+
+SAFE_MODE_MAX_LOOPS :: u32 = 10
+  // Lý do: Tối đa 10 × 30s = 5 phút cho activate_safe_mode() — prevent infinite loop (ADR-032)
+  // Sau max loops: trả về DigitalResult::NeedHuman regardless
 ```
 
 > **Type notation dùng trong file này:**
@@ -475,13 +479,23 @@ IDEMPOTENT: CÓ — same input produces same action (deterministic với tempera
 > Demo endpoint để bắt đầu task
 
 ```
-INPUT  :: { intent: string }
+INPUT  :: {
+  intent: string,
+  motion_state?: string  // "stationary" | "walking_slow" | "walking_fast" | "running" (ADR-035)
+                         // Optional — defaults to Stationary nếu không có
+}
 
-OUTPUT :: { task_id: string, status: "started" } | Ref<ERR_DEMO_MODE>
+OUTPUT ::
+  { task_id: string, status: "started" }           // Normal digital task
+  | { task_id: string, status: "physical_safety_mode",  // ADR-035: motion gate triggered
+      message: string, intent: string, motion_state: string? }
+  | Ref<ERR_DEMO_MODE>
 
 SIDE EFFECTS:
+  - clear_replay_buffer()              : Xóa replay buffer (ADR-033) — FIRST action
+  - classify_intent() check            : Physical → halt, không spawn agent (ADR-035)
   - Session creation : touch_session() hoặc reuse existing
-  - Agent spawn      : Start DigitalAgent trong background tokio task
+  - Agent spawn      : Start DigitalAgent trong background tokio task (nếu Digital intent)
   - Cancel previous  : cancel_digital_agent() nếu có task đang chạy
 
 PRE-CONDITIONS:
@@ -489,8 +503,8 @@ PRE-CONDITIONS:
   - intent không rỗng
 
 POST-CONDITIONS:
-  - DigitalAgentHandle được lưu vào SessionStore
-  - Agent bắt đầu execution trong background
+  - Nếu Physical: replay buffer đã clear, không có agent spawn
+  - Nếu Digital: DigitalAgentHandle được lưu vào SessionStore, agent bắt đầu execution
 
 IDEMPOTENT: KHÔNG — cancel task cũ và tạo task mới
 ```
@@ -745,5 +759,10 @@ Agent Actions: Verb-first, descriptive
 | v0.3.0 | 2026-03-18 | Enums | ADDED: NavigateDecision | Không | ADR-027 |
 | v0.3.0 | 2026-03-18 | SessionState | ADDED: dialogue_history, step_history, action_key_history, ask_user_count | Có | ADR-029, ADR-026 |
 | v0.3.0 | 2026-03-18 | Error Registry | ADDED: ERR_STUCK_LOOP, ERR_NAVIGATE_BLOCKED | Không | ADR-026, ADR-027 |
-
-
+| v0.3.1 | 2026-03-18 | Constants | ADDED: `SAFE_MODE_MAX_LOOPS=10` | Không | ADR-032 |
+| v0.3.1 | 2026-03-18 | StartTaskRequest | ADDED: `motion_state: Option<string>` field | Không (backward-compat) | ADR-035 |
+| v0.3.1 | 2026-03-18 | demo/start_task | OUTPUT added: `physical_safety_mode` response variant | Không | ADR-035 |
+| v0.3.1 | 2026-03-18 | demo/start_task | SIDE EFFECTS added: `clear_replay_buffer()` first, `classify_intent()` check | Không | ADR-033, ADR-035 |
+| v0.3.1 | 2026-03-18 | demo/user_reply | SIDE EFFECT changed: raw `status_tx.send()` → `broadcast_status()` | Không | ADR-034 |
+| v0.3.1 | 2026-03-18 | Dockerfile | REMOVED: `python3-pip`, `google-generativeai` | Không | ADR-038 |
+| v0.3.1 | 2026-03-18 | Files | ADDED: `.do/app.yaml`, `LICENSE` | Không | ADR-039, hackathon |

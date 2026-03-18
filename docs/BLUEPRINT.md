@@ -84,9 +84,13 @@
       │ produces: Ref<string>
       ▼
 [2] HTTP POST /demo/start_task
-      │ input:  { intent: string }
+      │ input:  { intent: string, motion_state?: string }  ← ADR-035
+      │ step 2a: clear_replay_buffer()  ← ADR-033 (FIRST — prevent stale history leak)
+      │ step 2b: classify_intent(intent, motion_state)  ← ADR-035
+      │          nếu Physical → return {status: "physical_safety_mode"}, halt  ← ADR-035
+      │ step 2c: cancel_digital_agent() nếu có task cũ
       │ output: { task_id: string, status: "started" }
-      │ side effect: cancel old task nếu có, touch_session(), spawn DigitalAgent
+      │ side effect: touch_session(), spawn DigitalAgent
       ▼
 [3] DigitalAgent::execute_with_cancel() [starts in background tokio task]
       │ input:  Ref<string>, Ref<CancellationToken>, Ref<DigitalSessionContext>
@@ -178,6 +182,7 @@
 [5e-2] SSE broadcast: question to user
 [5e-3] HTTP POST /demo/user_reply { answer }
          └─ SessionStore::send_user_reply() → tx.send(answer)
+         └─ broadcast_status("👤 User replied: ...") ← ADR-034 (NOT raw status_tx.send)
 [5e-4] tokio::select! rx or cancel or 120s timeout
 [5e-5] history.push("Q: {question} | A: {answer}")
 [5e-6] Continue loop with answer context
@@ -1080,4 +1085,16 @@ apollos-ui-navigator/
 // - broadcast_status() + REPLAY_BUFFER added to demo_handler.rs (ADR-030)
 // - dialogue_history + step_history + action_key_history added to digital_agent.rs (ADR-029)
 // - stuck detection loop added to execute_with_cancel() (ADR-026)
+//
+// NEW in v0.3.1 (VHEATM Cycle #1 — commit 035c352):
+// - activate_safe_mode() bounded 10×30s, human_fallback at entry (ADR-032)
+// - clear_replay_buffer() first in start_task (ADR-033)
+// - user_reply uses broadcast_status only (ADR-034)
+// - motion_state field in StartTaskRequest + classify_intent gate (ADR-035)
+// - semantic_changed: SHA256 fast path + early exit (ADR-036)
+// - README.md rewritten for DO Gradient hackathon (ADR-037)
+// - Dockerfile: removed python3-pip + google-generativeai (ADR-038)
+// - .do/app.yaml → NEW FILE: DO App Platform deployment spec (ADR-039)
+// - .env.example: DEMO_MODE=1 as default (ADR-040)
+// - LICENSE → NEW FILE: MIT License for hackathon eligibility
 ```
