@@ -262,3 +262,32 @@ a `GEMINI_API_KEY` and Chrome installed.
 ## License
 
 MIT
+
+---
+
+## DSDD Documentation
+
+This project uses **DSDD (Design-Sufficient Design Document)** format for architecture and implementation specifications.
+
+### Documentation Files
+
+| File | Purpose | Status |
+|---|---|---|
+| [`CONTRACTS.md`](CONTRACTS.md) | Schema registry - types, interfaces, error codes | ✅ Complete |
+| [`BLUEPRINT.md`](BLUEPRINT.md) | Behavior specification - component logic, data flow | ✅ Complete |
+| [`ADR.md`](ADR.md) | Architecture decisions - why we made design choices | ✅ Complete |
+| [`README.md`](dsdd_template/README.md) | DSDD format explanation and workflow | ✅ Complete |
+
+### Key Architecture Decisions
+
+- **Vision-based navigation** over DOM access for 97% web compatibility (ADR-001)
+- **Rust ecosystem** for performance and reliability (ADR-002)
+- **Safety-first approach** with human escalation for sensitive content (ADR-004, ADR-007)
+- **Screenshot caching** to optimize API costs and latency (ADR-006)
+- **Real-time WebSocket narration** for accessibility (ADR-008)
+
+### Implementation Ready
+
+The DSDD documentation provides sufficient detail for an AI agent to implement the complete system without clarification. All schemas, behaviors, and architectural decisions are fully specified.
+
+For developers: Start with `BLUEPRINT.md` Section 8 for build order, then reference `CONTRACTS.md` for type definitions and `ADR.md` for architectural context.

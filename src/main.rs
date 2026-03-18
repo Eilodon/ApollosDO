@@ -15,14 +15,8 @@ async fn main() -> anyhow::Result<()> {
 
     let digital_agent = std::sync::Arc::new(apollos_ui_navigator::digital_agent::DigitalAgent::new().await?);
 
-    let mut sessions = apollos_ui_navigator::session::SessionStore::default();
-    if std::env::var("USE_FIRESTORE").unwrap_or_default() == "1" {
-        let project_id = std::env::var("GOOGLE_CLOUD_PROJECT")
-            .unwrap_or_else(|_| "apollos-v4".to_string());
-        let db = firestore::FirestoreDb::new(project_id).await?;
-        sessions = apollos_ui_navigator::session::SessionStore::with_firestore(db);
-        tracing::info!("Firestore persistence enabled");
-    }
+    // ADR-012: In-memory sessions only (Firestore removed)
+    let sessions = apollos_ui_navigator::session::SessionStore::default();
 
     let state = apollos_ui_navigator::AppState {
         sessions,

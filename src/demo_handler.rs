@@ -12,6 +12,8 @@ use std::convert::Infallible;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use std::collections::VecDeque;
+use std::sync::Mutex as StdMutex;
 
 use crate::{
     AppState,
@@ -46,13 +48,32 @@ fn get_status_tx() -> &'static broadcast::Sender<String> {
     })
 }
 
+// ADR-030: SSE replay buffer for late subscribers
+const REPLAY_BUFFER_SIZE: usize = 50;
+static REPLAY_BUFFER: std::sync::OnceLock<StdMutex<VecDeque<String>>> =
+    std::sync::OnceLock::new();
+
+fn get_replay_buffer() -> &'static StdMutex<VecDeque<String>> {
+    REPLAY_BUFFER.get_or_init(|| StdMutex::new(VecDeque::with_capacity(REPLAY_BUFFER_SIZE)))
+}
+
+/// ADR-030: Broadcast + buffer for replay
+fn broadcast_status(msg: String) {
+    let tx = get_status_tx();
+    let _ = tx.send(msg.clone());
+    if let Ok(mut buf) = get_replay_buffer().lock() {
+        if buf.len() >= REPLAY_BUFFER_SIZE {
+            buf.pop_front();
+        }
+        buf.push_back(msg);
+    }
+}
+
 /// POST /demo/start_task
 pub async fn start_task(
     State(state): State<AppState>,
     Json(req): Json<StartTaskRequest>,
 ) -> impl IntoResponse {
-    let status_tx = get_status_tx().clone();
-
     // Cancel bất kỳ task cũ nào
     state.sessions.cancel_digital_agent(
         DEMO_SESSION_ID,
@@ -66,7 +87,7 @@ pub async fn start_task(
     let agent = state.digital_agent.clone();
 
     // Emit initial status
-    let _ = status_tx.send(format!("🚀 Starting: {}", intent));
+    broadcast_status(format!("🚀 Starting: {}", intent));
 
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
@@ -90,26 +111,19 @@ pub async fn start_task(
         browser_executor_slot: browser_slot,
     };
 
-    let status_tx_task = status_tx.clone();
     let task = tokio::spawn(async move {
         // Lưu ý: NovaReasoningClient đã được inject vào `agent` (DigitalAgent)
         let result = agent.execute_with_cancel(&intent, cancel_clone, ctx).await;
 
         match &result {
             DigitalResult::Done(summary) => {
-                let _ = status_tx_task.send(
-                    format!("✅ Done: {}", summary)
-                );
+                broadcast_status(format!("✅ Done: {}", summary));
             }
             DigitalResult::NeedHuman(reason) => {
-                let _ = status_tx_task.send(
-                    format!("🤝 Escalating to human: {}", reason)
-                );
+                broadcast_status(format!("🤝 Escalating to human: {}", reason));
             }
             DigitalResult::Failed(err) => {
-                let _ = status_tx_task.send(
-                    format!("❌ Failed: {}", err)
-                );
+                broadcast_status(format!("❌ Failed: {}", err));
             }
         }
         
@@ -133,23 +147,18 @@ pub async fn start_task(
 pub async fn trigger_hard_stop(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let status_tx = get_status_tx();
 
     tracing::warn!(
         "⚠️  DEMO HARD STOP TRIGGERED — cancelling digital agent"
     );
-    let _ = status_tx.send(
-        "⚠️  HARD STOP FIRED — Safety system interrupt".to_string()
-    );
+    broadcast_status("⚠️  HARD STOP FIRED — Safety system interrupt".to_string());
 
     state.sessions.cancel_digital_agent(
         DEMO_SESSION_ID,
         crate::session::DigitalAgentCancelReason::HardStop,
     ).await;
 
-    let _ = status_tx.send(
-        "🛡️  Digital agent cancelled — Physical safety takes priority".to_string()
-    );
+    broadcast_status("🛡️  Digital agent cancelled — Physical safety takes priority".to_string());
 
     Json(serde_json::json!({
         "status": "hard_stop_fired",
@@ -214,17 +223,27 @@ pub async fn user_reply(
     }
 }
 
-/// GET /demo/status
+/// GET /demo/status — ADR-030: Replay buffered messages + live stream
 pub async fn status_stream() -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let rx = get_status_tx().subscribe();
+    // Replay buffered history for late subscribers
+    let replay = {
+        let buf = get_replay_buffer().lock().unwrap_or_else(|e| e.into_inner());
+        buf.iter().cloned().collect::<Vec<_>>()
+    };
 
-    let stream = BroadcastStream::new(rx)
+    let replay_stream = tokio_stream::iter(
+        replay.into_iter().map(|text| Ok(Event::default().data(text)))
+    );
+
+    // Then chain with live broadcast
+    let rx = get_status_tx().subscribe();
+    let live_stream = BroadcastStream::new(rx)
         .filter_map(|msg| match msg {
             Ok(text) => Some(Ok(Event::default().data(text))),
             Err(_) => None,
         });
 
-    Sse::new(stream)
+    Sse::new(replay_stream.chain(live_stream))
         .keep_alive(axum::response::sse::KeepAlive::default())
 }
 

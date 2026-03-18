@@ -21,6 +21,16 @@ use crate::nova_reasoning_client::NovaReasoningClient;
 use crate::types::{AgentAction, ElementSnapshot};
 
 const MAX_STEPS: u32 = 20;
+const STUCK_THRESHOLD: u32 = 3; // ADR-026: escalate after 3 identical actions
+const ASK_USER_MAX_TURNS: u32 = 3; // ADR-029: max dialogue turns per task
+
+/// ADR-017/018: Ensure browser executor slot is cleared at ALL return points.
+macro_rules! return_result {
+    ($slot:expr, $result:expr) => {{
+        *$slot.lock().await = None;
+        return $result;
+    }};
+}
 
 #[derive(Clone)]
 pub struct DigitalAgent {
@@ -96,14 +106,9 @@ impl DigitalAgent {
             }
         };
 
-        // [HACKATHON SDK COMPLIANCE] Warmup context using official Google GenAI SDK via Python bridge.
-        // This satisfies the "Built using SDK" requirement by using it for high-level tone & risk analysis.
-        let _ = emit_status("🧠 Đang phân tích ngữ cảnh (via Official SDK)...".to_string()).await;
-        if let Err(e) = self.call_sdk_bridge(intent).await {
-            tracing::warn!(session_id = %ctx.session_id, "SDK Bridge warmup failed: {}", e);
-        } else {
-            tracing::info!(session_id = %ctx.session_id, "SDK Bridge warmup successful");
-        }
+        // ADR-013: Direct warmup emit — no subprocess dependency.
+        // Gradient AI is the sole reasoning engine.
+        let _ = emit_status("🧠 Đang phân tích yêu cầu...".to_string()).await;
 
         // Khởi tạo browser
         let browser = match BrowserExecutor::new("https://www.google.com.vn").await {
@@ -118,16 +123,23 @@ impl DigitalAgent {
             }
         };
 
-        let nova_min_gap_s = env_f64("NOVA_MIN_GAP_S", 0.8).max(0.1);
-        let nova_burst_limit = env_usize("NOVA_BURST_LIMIT", 6).max(1);
+        // ADR-012: DO Gradient rate limits — tighter than Gemini
+        let nova_min_gap_s = env_f64("NOVA_MIN_GAP_S", 1.0).max(0.1);
+        let nova_burst_limit = env_usize("NOVA_BURST_LIMIT", 4).max(1);
         let nova_burst_window_s = env_f64("NOVA_BURST_WINDOW_S", 15.0).max(1.0);
-        let nova_backoff_ms = env_u64("NOVA_BACKOFF_MS", 800).max(100);
+        let nova_backoff_ms = env_u64("NOVA_BACKOFF_MS", 1000).max(100);
 
-        let mut history: Vec<String> = Vec::new();
-        // [v3] Screenshot caching — skip Nova call nếu page không đổi (ADR-016)
+        let mut dialogue_history: Vec<String> = Vec::new();
+        let mut step_history: Vec<String> = Vec::new();
+        // [v3] Screenshot caching — skip Nova call nếu page không đổi (ADR-006 & ADR-024)
+        let mut prev_screenshot_bytes: Option<Vec<u8>> = None;
         let mut prev_screenshot_hash: Option<[u8; 32]> = None;
         let mut consecutive_stable_frames: u32 = 0;
-        const MAX_STABLE_WAIT: u32 = 5; // Sau 5 frames stable -> force Nova call
+        const MAX_STABLE_WAIT: u32 = 5;
+        // ADR-026: Stuck detection
+        let mut action_key_history: Vec<String> = Vec::new();
+        // ADR-029: Ask user turn counter
+        let mut ask_user_count: u32 = 0;
 
         for step in 1..=MAX_STEPS {
             // ── Safety gate — check TRƯỚC mỗi step ──────────────────────
@@ -137,22 +149,22 @@ impl DigitalAgent {
                     step,
                     "Digital agent cancelled at step start by safety system"
                 );
-                return DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into());
+                return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into()));
             }
 
             // ── Screenshot với cancel race ────────────────────────────────
             let screenshot = tokio::select! {
                 _ = cancel.cancelled() => {
                     tracing::warn!(session_id = %ctx.session_id, "Cancelled during screenshot");
-                    return DigitalResult::Failed("Bị gián đoạn khi chụp màn hình".into());
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi chụp màn hình".into()));
                 }
                 result = browser.screenshot() => match result {
                     Ok(s) => s,
-                    Err(e) => return DigitalResult::Failed(format!("Screenshot lỗi: {}", e)),
+                    Err(e) => return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Screenshot lỗi: {}", e))),
                 }
             };
 
-            // [v3] Screenshot caching — nếu page không thay đổi, skip Nova call (ADR-016)
+            // [v3] Screenshot caching — nếu page không thay đổi, skip Nova call (ADR-024)
             let current_hash = {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
@@ -163,7 +175,15 @@ impl DigitalAgent {
                 hash
             };
 
-            if prev_screenshot_hash == Some(current_hash) && step > 1 {
+            let is_stable = if prev_screenshot_hash == Some(current_hash) {
+                true
+            } else if let Some(old_bytes) = &prev_screenshot_bytes {
+                !semantic_changed(old_bytes, &screenshot)
+            } else {
+                false
+            };
+
+            if is_stable && step > 1 {
                 consecutive_stable_frames += 1;
                 if consecutive_stable_frames >= MAX_STABLE_WAIT {
                     tracing::info!(
@@ -183,7 +203,7 @@ impl DigitalAgent {
                     emit_status("Đang tải trang...".to_string()).await;
                     tokio::select! {
                         _ = cancel.cancelled() => {
-                            return DigitalResult::Failed("Bị gián đoạn khi chờ tải trang".into());
+                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi chờ tải trang".into()));
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_millis(nova_backoff_ms)) => {}
                     }
@@ -193,6 +213,7 @@ impl DigitalAgent {
                 consecutive_stable_frames = 0;
             }
             prev_screenshot_hash = Some(current_hash);
+            prev_screenshot_bytes = Some(screenshot.clone());
 
             let now_epoch = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
             if !ctx
@@ -210,22 +231,35 @@ impl DigitalAgent {
                 emit_status("Hệ thống đang giới hạn tốc độ truy vấn, vui lòng đợi...".to_string()).await;
                 tokio::select! {
                     _ = cancel.cancelled() => {
-                        return DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into());
+                        return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into()));
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(nova_backoff_ms)) => {}
                 }
                 continue;
             }
 
-            // ── Bedrock call với cancel race — CRITICAL ───────────────────
-            // Bedrock call có thể mất 2–5s. Cancel PHẢI interrupt tại đây.
+            // ── ADR-031: Extract DOM context for hybrid navigation ────────
+            let dom_context = match browser.extract_dom_context().await {
+                Ok(ctx_str) => Some(ctx_str),
+                Err(e) => {
+                    tracing::debug!(session_id = %ctx.session_id, "DOM context extraction failed: {} — using vision only", e);
+                    None
+                }
+            };
+
+            // ── Gradient call with cancel race — CRITICAL ───────────────────
+            // API call có thể mất 2–5s. Cancel PHẢI interrupt tại đây.
             let start = Instant::now();
             let action_result = tokio::select! {
                 _ = cancel.cancelled() => {
                     tracing::warn!(session_id = %ctx.session_id, "Cancelled during Nova reasoning");
-                    return DigitalResult::Failed("Bị gián đoạn khi AI đang suy nghĩ".into());
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi AI đang suy nghĩ".into()));
                 }
-                result = self.reasoning.next_action(&screenshot, intent, &history, step) => {
+                result = self.reasoning.next_action_with_cancel(
+                    &screenshot, intent, &dialogue_history, &step_history, step,
+                    Some(&cancel),
+                    dom_context.as_deref(),
+                ) => {
                     result
                 }
             };
@@ -234,28 +268,54 @@ impl DigitalAgent {
             let action = match action_result {
                 Ok(a) => a,
                 Err(e) => {
-                    return DigitalResult::Failed(format!("Nova reasoning lỗi: {}", e));
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Nova reasoning lỗi: {}", e)));
                 }
             };
+
+            // ── ADR-026: Stuck action detection ──────────────────────────
+            let action_key = compute_action_key(&action);
+            action_key_history.push(action_key.clone());
+            if action_key_history.len() >= STUCK_THRESHOLD as usize {
+                let tail = &action_key_history[action_key_history.len() - STUCK_THRESHOLD as usize..];
+                if tail.iter().all(|k| k == &action_key) {
+                    tracing::warn!(
+                        session_id = %ctx.session_id,
+                        action_key,
+                        "ADR-026: Stuck after {} identical actions — escalating to human",
+                        STUCK_THRESHOLD
+                    );
+                    return_result!(ctx.browser_executor_slot, DigitalResult::NeedHuman(
+                        format!("AI bị kẹt lặp lại cùng một thao tác ({}) — cần người hỗ trợ", action_key)
+                    ));
+                }
+            }
 
             // ── Log history ───────────────────────────────────────────────
             let desc = format!("Step {}: {:?}", step, action);
             tracing::info!(session_id = %ctx.session_id, "{}", desc);
-            history.push(desc);
+            step_history.push(desc);
 
             // ── Check terminal + dialogue states TRƯỚC executor ─────────
             match &action {
                 AgentAction::Done { summary } => {
                     tracing::info!(session_id = %ctx.session_id, "Digital task done: {}", summary);
                     emit_status(format!("✅ {}", summary)).await;
-                    return DigitalResult::Done(summary.clone());
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Done(summary.clone()));
                 }
                 AgentAction::Escalate { reason } => {
                     tracing::warn!(session_id = %ctx.session_id, "Digital task escalating: {}", reason);
-                    emit_status(format!("🤝 {}", reason)).await;
-                    return DigitalResult::NeedHuman(reason.clone());
+                    // ADR-025: Simulate Safe Mode loop
+                    return_result!(ctx.browser_executor_slot, activate_safe_mode(&ctx, reason, &cancel).await);
                 }
                 AgentAction::AskUser { question } => {
+                    // ADR-029: Enforce max ask_user turns
+                    ask_user_count += 1;
+                    if ask_user_count > ASK_USER_MAX_TURNS {
+                        tracing::warn!(session_id = %ctx.session_id, "ADR-029: ask_user limit reached ({})", ASK_USER_MAX_TURNS);
+                        return_result!(ctx.browser_executor_slot, DigitalResult::NeedHuman(
+                            "AI đã hỏi quá nhiều lần — cần người hỗ trợ trực tiếp".to_string()
+                        ));
+                    }
                     tracing::info!(session_id = %ctx.session_id, "Agent asking user: {}", question);
                     emit_status(format!("❓ {}", question)).await;
 
@@ -268,21 +328,24 @@ impl DigitalAgent {
                     let answer = tokio::select! {
                         _ = cancel.cancelled() => {
                             tracing::warn!(session_id = %ctx.session_id, "Cancelled while waiting for user reply");
-                            return DigitalResult::Failed("Bị gián đoạn trong khi chờ phản hồi".into());
+                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn trong khi chờ phản hồi".into()));
                         }
                         result = rx => {
                             match result {
                                 Ok(ans) => ans,
-                                Err(_) => return DigitalResult::Failed("Kết nối bị đứt khi chờ phản hồi".into()),
+                                Err(_) => return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Kết nối bị đứt khi chờ phản hồi".into())),
                             }
                         }
                         _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
                             emit_status("⏱️ Hết thời gian chờ phản hồi".to_string()).await;
-                            return DigitalResult::Failed("Hết thời gian chờ phản hồi".into());
+                            return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Hết thời gian chờ phản hồi".into()));
                         }
                     };
 
-                    history.push(format!("[User dialogue] Q: {} | A: {}", question, answer));
+                    dialogue_history.push(format!("[User dialogue] Q: {} | A: {}", question, answer));
+                    if dialogue_history.len() > 10 {
+                        dialogue_history.remove(0);
+                    }
                     emit_status(format!("👤 User: {}", answer)).await;
                     continue;
                 }
@@ -300,23 +363,38 @@ impl DigitalAgent {
                         "Sensitive action guard triggered: {}",
                         reason
                     );
-                    return DigitalResult::NeedHuman(reason);
+                    return_result!(ctx.browser_executor_slot, activate_safe_mode(&ctx, &reason, &cancel).await);
                 }
                 SensitiveGuardOutcome::Cancelled => {
-                    return DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into());
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn bởi hệ thống an toàn".into()));
+                }
+            }
+
+            // ── ADR-027: Navigate URL validation ────────────────────────────
+            if let AgentAction::Navigate { url } = &action {
+                match validate_navigate_url(url) {
+                    NavigateDecision::Block(reason) => {
+                        tracing::warn!(session_id = %ctx.session_id, url, "ADR-027: Navigate blocked — {}", reason);
+                        step_history.push(format!("Step {}: BLOCKED navigate to {} — {}", step, url, reason));
+                        continue; // skip this action, let AI try again
+                    }
+                    NavigateDecision::Escalate(reason) => {
+                        return_result!(ctx.browser_executor_slot, DigitalResult::NeedHuman(reason));
+                    }
+                    NavigateDecision::Allow => {} // proceed
                 }
             }
 
             // ── Execute action với cancel race ────────────────────────────
             let exec_result = tokio::select! {
                 _ = cancel.cancelled() => {
-                    return DigitalResult::Failed("Bị gián đoạn khi thực thi action".into());
+                    return_result!(ctx.browser_executor_slot, DigitalResult::Failed("Bị gián đoạn khi thực thi action".into()));
                 }
                 result = browser.execute(&action) => result
             };
 
             if let Err(e) = exec_result {
-                return DigitalResult::Failed(format!("Browser execute lỗi: {}", e));
+                return_result!(ctx.browser_executor_slot, DigitalResult::Failed(format!("Browser execute lỗi: {}", e)));
             }
 
             // [ENHANCED] Human-readable narration thay vì "Step N: action"
@@ -349,6 +427,8 @@ impl DigitalAgent {
             }
         }
 
+        // ADR-017: Clear browser executor slot before final return
+        *ctx.browser_executor_slot.lock().await = None;
         DigitalResult::Failed(format!(
             "Đã thực hiện {} bước nhưng chưa xong — tác vụ quá phức tạp hoặc trang web khó điều hướng.",
             MAX_STEPS
@@ -404,21 +484,78 @@ impl DigitalAgent {
         }
     }
 
-    async fn call_sdk_bridge(&self, intent: &str) -> anyhow::Result<String> {
-        let output = tokio::process::Command::new("python3")
-            .arg("scripts/google_genai_sdk_bridge.py")
-            .arg(intent)
-            .output()
-            .await?;
+    // ADR-013: call_sdk_bridge() removed — DO Gradient is sole reasoning engine
+}
 
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("SDK bridge failed: {}", err);
+// ── ADR-026: Stuck action detection helper ──────────────────────────────
+fn compute_action_key(action: &AgentAction) -> String {
+    match action {
+        AgentAction::Click { target } => {
+            format!("click:{}", target.css.as_deref()
+                .or(target.aria_label.as_deref())
+                .or(target.text_content.as_deref())
+                .unwrap_or("coords"))
         }
-
-        let body = String::from_utf8_lossy(&output.stdout);
-        Ok(body.to_string())
+        AgentAction::Type { target, value } => {
+            format!("type:{}:{}", target.css.as_deref()
+                .or(target.aria_label.as_deref())
+                .unwrap_or("?"), &value[..value.len().min(10)])
+        }
+        AgentAction::Navigate { url } => format!("navigate:{}", url),
+        AgentAction::Scroll { direction } => format!("scroll:{}", direction),
+        AgentAction::Wait { .. } => "wait".to_string(),
+        AgentAction::Done { .. } => "done".to_string(),
+        AgentAction::Escalate { .. } => "escalate".to_string(),
+        AgentAction::AskUser { .. } => "ask_user".to_string(),
     }
+}
+
+// ── ADR-027: Navigate URL validation ────────────────────────────────────
+enum NavigateDecision {
+    Allow,
+    Block(String),
+    Escalate(String),
+}
+
+fn validate_navigate_url(url: &str) -> NavigateDecision {
+    let lower = url.to_lowercase();
+
+    // Block dangerous protocols
+    if lower.starts_with("javascript:")
+        || lower.starts_with("data:")
+        || lower.starts_with("file:")
+        || lower.starts_with("vbscript:")
+    {
+        return NavigateDecision::Block(format!("Blocked protocol: {}", url.split(':').next().unwrap_or("?")));
+    }
+
+    // Block local/private IPs
+    let host_part = lower.split("//").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+    if host_part.starts_with("127.")
+        || host_part.starts_with("192.168.")
+        || host_part.starts_with("10.")
+        || host_part == "localhost"
+        || host_part.starts_with("172.16.")
+    {
+        return NavigateDecision::Block(format!("Blocked local/private address: {}", host_part));
+    }
+
+    // Escalate payment/banking URLs
+    let sensitive_domains = ["checkout", "payment", "pay/", "/pay?", "billing", "purchase"];
+    for domain in &sensitive_domains {
+        if host_part.contains(domain) {
+            return NavigateDecision::Escalate(
+                format!("URL chứa trang nhạy cảm ({}) — cần xác nhận", domain)
+            );
+        }
+    }
+
+    // Allow must be https:// or http://
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return NavigateDecision::Block(format!("Only HTTP/HTTPS allowed, got: {}", url.split(':').next().unwrap_or("?")));
+    }
+
+    NavigateDecision::Allow
 }
 
 fn sensitive_reasons_for_action(
@@ -629,6 +766,78 @@ const ACCOUNT_KEYWORDS: [&str; 12] = [
     "change phone",
     "xoa tai khoan",
 ];
+
+use image::GenericImageView;
+
+fn semantic_changed(old: &[u8], new: &[u8]) -> bool {
+    const SEMANTIC_DIFF_THRESHOLD: f64 = 0.05;
+    if old == new {
+        return false;
+    }
+    
+    // Attempt to decode both images
+    if let (Ok(img1), Ok(img2)) = (
+        image::load_from_memory(old),
+        image::load_from_memory(new),
+    ) {
+        if img1.dimensions() != img2.dimensions() {
+            return true;
+        }
+        
+        let bounds = img1.dimensions();
+        let total_pixels = (bounds.0 * bounds.1) as f64;
+        let mut diff_pixels = 0;
+        
+        let rgba1 = img1.to_rgba8();
+        let rgba2 = img2.to_rgba8();
+        
+        for (p1, p2) in rgba1.pixels().zip(rgba2.pixels()) {
+            if p1 != p2 {
+                diff_pixels += 1;
+            }
+        }
+        let diff_ratio = (diff_pixels as f64) / total_pixels;
+        diff_ratio > SEMANTIC_DIFF_THRESHOLD
+    } else {
+        // If decode fails, fallback to true (different)
+        true
+    }
+}
+
+async fn activate_safe_mode(
+    ctx: &DigitalSessionContext,
+    reason: &str,
+    cancel: &CancellationToken,
+) -> DigitalResult {
+    let ws = ctx.ws_registry.clone();
+    let sid = ctx.session_id.clone();
+    
+    // Navigate to safe blank page if possible
+    if let Some(browser) = ctx.browser_executor_slot.lock().await.clone() {
+        let _ = browser.execute(&AgentAction::Navigate { url: "about:blank".to_string() }).await;
+    }
+    
+    let base_msg = format!("🔒 Safe Mode: {} Đang kết nối với người hỗ trợ...", reason);
+    loop {
+        let _ = ws
+            .send_live(
+                &sid,
+                BackendToClientMessage::AssistantText(AssistantTextMessage {
+                    session_id: sid.clone(),
+                    timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+                    text: base_msg.clone(),
+                }),
+            )
+            .await;
+            
+        tokio::select! {
+             _ = cancel.cancelled() => {
+                 return DigitalResult::NeedHuman(reason.to_string());
+             }
+             _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+        }
+    }
+}
 
 fn env_f64(key: &str, default: f64) -> f64 {
     std::env::var(key)

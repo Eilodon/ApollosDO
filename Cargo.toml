@@ -22,7 +22,7 @@ futures = "0.3"
 # Browser automation
 chromiumoxide = { version = "0.7", features = ["tokio", "tokio-runtime"] }
 
-# HTTP client (Gemini API calls)
+# HTTP client (DO Gradient API calls)
 reqwest = { version = "0.12", features = ["json"] }
 
 # Serialization
@@ -32,8 +32,11 @@ serde_json = "1"
 # Encoding
 base64 = "0.22"
 
-# Hashing (screenshot cache — SHA256 per ADR-N17)
+# Hashing (screenshot cache — SHA256 per ADR-006)
 sha2 = "0.10"
+
+# Image processing (semantic diff per ADR-024)
+image = "0.24"
 
 # Error handling
 anyhow = "1"
@@ -50,10 +53,6 @@ dotenvy = "0.15"
 
 # UUID
 uuid = { version = "1.0", features = ["v4", "serde"] }
-
-# Firestore
-firestore = "0.45"
-serde_with = "3"
 
 [profile.release]
 opt-level = 3

@@ -264,4 +264,50 @@ impl BrowserExecutor {
 
         Ok(None)
     }
+
+    /// ADR-031: Extract interactive DOM elements for hybrid navigation.
+    /// Returns a compact text summary of clickable/typeable elements,
+    /// allowing the reasoning model to prefer DOM selectors over coordinates.
+    pub async fn extract_dom_context(&self) -> anyhow::Result<String> {
+        let page = self.page.lock().await;
+
+        let js = r#"
+            (function() {
+                const els = document.querySelectorAll(
+                    'a[href], button, input, select, textarea, [role="button"], [onclick]'
+                );
+                const items = [];
+                const seen = new Set();
+                for (const el of els) {
+                    if (items.length >= 30) break;
+                    const tag = el.tagName.toLowerCase();
+                    const label = el.getAttribute('aria-label') || el.innerText?.trim().slice(0, 40) || '';
+                    const css = el.id ? '#' + el.id
+                        : el.getAttribute('data-testid') ? `[data-testid="${el.getAttribute('data-testid')}"]`
+                        : el.getAttribute('aria-label') ? `[aria-label="${el.getAttribute('aria-label')}"]`
+                        : null;
+                    const key = tag + ':' + label.slice(0, 20);
+                    if (seen.has(key) || !label) continue;
+                    seen.add(key);
+                    let desc = `<${tag}`;
+                    if (css) desc += ` css="${css}"`;
+                    if (el.type) desc += ` type="${el.type}"`;
+                    if (label) desc += ` label="${label.slice(0, 40)}"`;
+                    if (el.href) desc += ` href="${el.href.slice(0, 60)}"`;
+                    desc += '>';
+                    items.push(desc);
+                }
+                return items.join('\n');
+            })()
+        "#;
+
+        let result = page.evaluate(js).await?;
+        let context = result.into_value::<String>().unwrap_or_default();
+
+        if context.is_empty() {
+            return Err(anyhow::anyhow!("No interactive elements found on page"));
+        }
+
+        Ok(context)
+    }
 }

@@ -266,6 +266,7 @@ mod tests {
     use crate::types::{
         BackendToClientMessage, AssistantTextMessage,
     };
+    use tokio::sync::mpsc;
 
     fn connection_state_payload() -> BackendToClientMessage {
         BackendToClientMessage::AssistantText(AssistantTextMessage {
