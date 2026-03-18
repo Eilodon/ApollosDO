@@ -49,6 +49,7 @@ pub fn classify_intent(transcript: &str, motion_state: MotionState) -> Intent {
         "navigate",
         "open",
         "go to",
+        "go ",
         "flight",
         "ticket",
         "vé",
@@ -63,11 +64,34 @@ pub fn classify_intent(transcript: &str, motion_state: MotionState) -> Intent {
         "email",
         "calendar",
         "lịch",
+        "tell me",
+        "show me",
+        "what is",
+        "what's",
+        "title",
+        "page",
+        "read",
+        "get",
+        "describe",
+        "how",
+        "price",
+        "weather",
+        "news",
+        "http",
+        ".com",
+        ".vn",
+        ".org",
     ];
     if digital_keywords.iter().any(|k| lower.contains(k)) {
         return Intent::Digital(transcript.to_string());
     }
 
-    // Default to physical if not clearly digital (Safety first)
-    Intent::Physical
+    // Default: Stationary/WalkingSlow users get the benefit of the doubt → Digital
+    // Running/WalkingFast already blocked above. Only ambiguous input when stationary → Digital.
+    match motion_state {
+        MotionState::Stationary | MotionState::WalkingSlow => {
+            Intent::Digital(transcript.to_string())
+        }
+        _ => Intent::Physical,
+    }
 }
