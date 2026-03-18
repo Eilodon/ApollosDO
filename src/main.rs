@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     let digital_agent = std::sync::Arc::new(apollos_ui_navigator::digital_agent::DigitalAgent::new().await?);
 
-    // ADR-012: In-memory sessions only (Firestore removed)
+    // ADR-012: In-memory session store — no external database dependency
     let sessions = apollos_ui_navigator::session::SessionStore::default();
 
     let state = apollos_ui_navigator::AppState {

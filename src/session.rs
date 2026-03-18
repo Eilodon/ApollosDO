@@ -16,7 +16,7 @@ use crate::types::MotionState;
 use crate::browser_executor::BrowserExecutor;
 use crate::digital_agent::{DigitalResult, UserReplyTx};
 
-// ADR-012: Firestore removed — in-memory only
+// ADR-012: In-memory session store — no external database dependency
 
 pub struct DigitalAgentHandle {
     pub cancel: CancellationToken,

@@ -1,76 +1,46 @@
 # Apollos — UI Navigator
-### Gemini Live Agent Challenge · UI Navigator Category
+### DigitalOcean Gradient™ AI Hackathon Submission
 
-> **97% of the web is inaccessible to screen readers.**  
-> Apollos uses Gemini Vision to navigate it by sight — the way a sighted person would.
+> **97% of the web is inaccessible to screen readers.**
+> Apollos uses DigitalOcean Gradient AI (Llama 3.2 Vision) to navigate it by sight —
+> the way a sighted person would.
 
 ---
 
 ## What it does
 
-Apollos is a voice-controlled AI agent that navigates the web on behalf of
-blind and low-vision users. The user speaks a natural intent; the agent
-clarifies ambiguity, navigates autonomously, narrates every step, and
+Apollos is a voice-controlled AI browser agent for blind and low-vision users.
+The user speaks a natural intent; the agent clarifies ambiguity, navigates the web
+autonomously using screenshot-based vision, narrates every step in real time, and
 escalates to a human when it reaches payment or sensitive data.
 
 ```
-User: "Find me the cheapest flight from Ho Chi Minh to Tokyo next month"
+User: "Tìm vé máy bay rẻ nhất từ Sài Gòn đi Tokyo tháng tới"
 
-Agent: "Would you prefer direct flights, or are connecting flights okay
-        if they're cheaper? And roughly what dates — early or late April?"
+Agent: "Bạn muốn bay thẳng hay nối chuyến nếu rẻ hơn? Khoảng ngày nào?"
 
-User: "Connecting is fine, around April 20-25"
+User: "Nối chuyến được, khoảng 20-25 tháng 4"
 
-→ Chrome opens Google Flights
-→ Agent navigates: origin → destination → dates → search
-→ "I found Vietnam Airlines April 22, $298 via Hanoi (5h total).
-   Also Japan Airlines April 24, $341 direct. Which do you prefer?"
+→ Chrome mở Google Flights
+→ Agent điều hướng: điểm đi → điểm đến → ngày → tìm kiếm
+→ "Tìm thấy Vietnam Airlines ngày 22/4, $298 nối chuyến qua Hà Nội.
+   Japan Airlines ngày 24/4, $341 thẳng. Bạn chọn hãng nào?"
 
-User: "Cheapest"
+User: "Rẻ nhất"
 
-→ Agent selects flight → payment page detected
-→ "Flight selected: Vietnam Airlines April 22, $298.
-   Payment required — connecting you to an assistant."
-→ Human handoff via Twilio
+→ Agent chọn chuyến → phát hiện trang thanh toán
+→ "Đã chọn Vietnam Airlines 22/4, $298.
+   Trang yêu cầu thanh toán — đang kết nối người hỗ trợ."
+→ Human escalation triggered
 ```
 
-**Key capabilities:**
-- Multi-turn dialogue — agent asks before acting when intent is ambiguous
-- Real-time narration — every browser action announced in natural language
-- Screenshot-based navigation — works on any website, no DOM access needed
-- Graceful escalation — never guesses on payment, OTP, or personal data
-- Safety interrupt — hard-stop cancels the agent in < 1s
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│                  apollos-server                      │
-│                                                      │
-│  Voice intent → classify_intent()                   │
-│       │                                             │
-│       ▼                                             │
-│  DigitalAgent::execute_with_cancel()                │
-│       │                                             │
-│   loop (max 20 steps):                              │
-│       ├── screenshot() ──► Gemini Vision            │
-│       │                    (gemini-2.0-flash)       │
-│       │                         │                   │
-│       │                    AgentAction JSON         │
-│       │                         │                   │
-│       ├── AskUser? ──► pause, wait for /user_reply  │
-│       ├── Done/Escalate? ──► return result          │
-│       └── execute() ──► chromiumoxide → Chrome      │
-│                                                      │
-│  Safety: CancellationToken at every await point     │
-│  POST /demo/trigger_hard_stop → cancel < 1s         │
-└─────────────────────────────────────────────────────┘
-         │                          │
-    Google Firestore          Google Cloud Run
-    (session persistence)     (deployment)
-```
+**Core capabilities:**
+- Motion-aware intent classification — Running/WalkingFast locks out digital tasks (safety)
+- Multi-turn dialogue — asks before acting when intent is ambiguous
+- Real-time Vietnamese narration via SSE
+- Screenshot-based navigation via DigitalOcean Gradient AI (Llama 3.2 Vision)
+- Safety-first escalation — never guesses on payment, OTP, or passwords
+- Hard-stop cancellation — agent interrupts in < 1s via CancellationToken
 
 ---
 
@@ -79,25 +49,38 @@ User: "Cheapest"
 | Layer | Technology |
 |---|---|
 | Language | Rust (stable) |
-| Web framework | axum |
+| Web framework | axum 0.7 |
 | Async runtime | Tokio |
 | Browser automation | chromiumoxide (CDP) |
-| AI reasoning | Gemini Vision (`gemini-2.0-flash`) |
+| AI reasoning | **DigitalOcean Gradient™ AI** (`llama3.2-vision`) |
+| Deployment | **DigitalOcean App Platform** |
 | HTTP client | reqwest |
 | Serialization | serde / serde_json |
-| Hashing | sha2 |
-| Persistence | Google Firestore |
-| Deployment | Google Cloud Run |
+
+---
+
+## DigitalOcean Gradient Integration
+
+This project uses DO Gradient™ AI as the sole reasoning engine:
+
+- **Inference endpoint:** `https://inference.do-ai.run/v1/chat/completions`
+- **Model:** `llama3.2-vision` (vision-capable, OpenAI-compatible API)
+- **Auth:** Bearer token via `GRADIENT_API_KEY`
+- **Deployment:** DigitalOcean App Platform (see `.do/app.yaml`)
+
+Every browser action decision is made by Gradient — the agent sends a PNG screenshot
+of the current page plus intent context, and Gradient returns the next action as JSON.
 
 ---
 
 ## Prerequisites
 
 - Rust stable (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- Chrome or Chromium installed
+- Chromium installed:
   - Ubuntu: `sudo apt-get install -y chromium-browser`
-  - macOS: `brew install --cask google-chrome`
-- A Gemini API key — get one free at [aistudio.google.com](https://aistudio.google.com)
+  - macOS: `brew install --cask chromium`
+- A DigitalOcean Gradient API key — get one at [cloud.digitalocean.com/gen-ai](https://cloud.digitalocean.com/gen-ai)
+  - New accounts receive **$200 free credits**
 
 ---
 
@@ -110,16 +93,16 @@ cd apollos-ui-navigator
 
 # 2. Configure
 cp .env.example .env
-# Edit .env — set GEMINI_API_KEY at minimum
+# Edit .env — set GRADIENT_API_KEY
 
 # 3. Build
 cargo build --release
 
-# 4. Run
+# 4. Run (demo mode on, Chrome visible)
 DEMO_MODE=1 BROWSER_HEADLESS=false cargo run --release
 ```
 
-The server starts on `http://localhost:8080`.
+Server starts on `http://localhost:8080`.
 
 ---
 
@@ -127,50 +110,48 @@ The server starts on `http://localhost:8080`.
 
 ```bash
 # Required
-GEMINI_API_KEY=your_gemini_api_key_here
+GRADIENT_API_KEY=your_gradient_api_key_here
 
 # Optional — defaults shown
-BROWSER_AGENT_MODEL=gemini-2.0-flash   # Gemini model for browser reasoning
-BROWSER_HEADLESS=true                  # false = Chrome window visible (demo)
-DEMO_MODE=0                            # 1 = enable /demo/* endpoints
-CHROME_EXECUTABLE=                     # auto-detected if empty
-USE_FIRESTORE=0                        # 1 = enable Firestore persistence
-
-# Firestore (only if USE_FIRESTORE=1)
-GOOGLE_CLOUD_PROJECT=your_project_id
+GRADIENT_ENDPOINT=https://inference.do-ai.run/v1/chat/completions
+BROWSER_AGENT_MODEL=llama3.2-vision
+BROWSER_HEADLESS=true
+DEMO_MODE=1          # Enable /demo/* endpoints (default ON for demo)
+CHROME_EXECUTABLE=   # auto-detected if empty
+PORT=8080
 ```
 
 ---
 
-## Demo Endpoints
-
-Enable with `DEMO_MODE=1`.
+## Demo Endpoints (requires `DEMO_MODE=1`)
 
 ### Start a task
 ```bash
 curl -X POST http://localhost:8080/demo/start_task \
   -H "Content-Type: application/json" \
-  -d '{"intent": "Find the cheapest flight from Ho Chi Minh to Tokyo next month"}'
+  -d '{"intent": "Tìm vé máy bay rẻ nhất SGN đến Tokyo tháng 4"}'
 ```
 
-### Stream live status
+### Stream live status (open in separate terminal)
 ```bash
 curl -N http://localhost:8080/demo/status
-# Server-Sent Events stream — shows agent narration in real time
 ```
 
-### Reply to agent question
+### Reply to agent clarification
 ```bash
-# When agent asks a clarifying question:
 curl -X POST http://localhost:8080/demo/user_reply \
   -H "Content-Type: application/json" \
-  -d '{"answer": "Connecting flights are fine, around April 20-25"}'
+  -d '{"answer": "Nối chuyến được, khoảng 20-25 tháng 4"}'
 ```
 
-### Trigger safety hard stop
+### Safety hard stop
 ```bash
-# Cancels the active digital agent in < 1s
 curl -X POST http://localhost:8080/demo/trigger_hard_stop
+```
+
+### Live screenshot
+```bash
+curl http://localhost:8080/demo/screenshot --output screenshot.png
 ```
 
 ---
@@ -178,116 +159,99 @@ curl -X POST http://localhost:8080/demo/trigger_hard_stop
 ## Demo Script (3-minute walkthrough)
 
 ```bash
-# Terminal 1 — server with Chrome visible
-DEMO_MODE=1 BROWSER_HEADLESS=false GEMINI_API_KEY=<key> \
-  RUST_LOG=info cargo run --release
+# Terminal 1 — server
+DEMO_MODE=1 BROWSER_HEADLESS=false GRADIENT_API_KEY=<key> cargo run --release
 
 # Terminal 2 — live status stream
 curl -N http://localhost:8080/demo/status
 
-# Terminal 3 — send commands
-# Step 1: start task
+# Terminal 3 — commands
+# 1. Start task (triggers motion-aware intent classification)
 curl -X POST localhost:8080/demo/start_task \
-  -d '{"intent": "Find cheapest flight from Ho Chi Minh to Tokyo next month"}'
+  -H "Content-Type: application/json" \
+  -d '{"intent":"Tìm vé máy bay từ Sài Gòn đi Tokyo tháng 4","motion_state":"stationary"}'
 
-# Step 2: reply when agent asks clarifying question
+# 2. Reply to clarifying question
 curl -X POST localhost:8080/demo/user_reply \
-  -d '{"answer": "Connecting flights fine, around April 20-25"}'
+  -H "Content-Type: application/json" \
+  -d '{"answer":"Nối chuyến được, khoảng 20-25 tháng 4"}'
 
-# Step 3: reply when agent surfaces options
-curl -X POST localhost:8080/demo/user_reply \
-  -d '{"answer": "Go with the cheapest"}'
-
-# Step 4 (separate run): test safety interrupt
+# 3. Demo safety interrupt
 curl -X POST localhost:8080/demo/start_task \
-  -d '{"intent": "Find cheap flight SGN to Tokyo April"}'
-# ... wait 8-10 seconds ...
-curl -X POST localhost:8080/demo/trigger_hard_stop
+  -H "Content-Type: application/json" \
+  -d '{"intent":"Tìm chuyến bay","motion_state":"running"}'
+# Response: {"status":"physical_safety_mode","message":"Đang di chuyển — tác vụ số bị tạm dừng vì lý do an toàn"}
 ```
 
 ---
 
-## Google Cloud Deployment
+## Deploy to DigitalOcean App Platform
 
 ```bash
-# Build container
-gcloud builds submit --tag gcr.io/$PROJECT_ID/apollos-ui-navigator
+# Option 1: Deploy via doctl
+doctl apps create --spec .do/app.yaml
 
-# Deploy to Cloud Run
-gcloud run deploy apollos-ui-navigator \
-  --image gcr.io/$PROJECT_ID/apollos-ui-navigator \
-  --platform managed \
-  --region us-central1 \
-  --memory 1Gi \
-  --set-env-vars GEMINI_API_KEY=$GEMINI_API_KEY,USE_FIRESTORE=1 \
-  --allow-unauthenticated
+# Option 2: Deploy via dashboard
+# Upload .do/app.yaml or connect GitHub repo at cloud.digitalocean.com/apps
 ```
 
-See `Dockerfile` for container configuration.
+See `.do/app.yaml` for full App Platform configuration.
+
+---
+
+## Architecture
+
+```
+[Blind User / Demo]
+      │ voice intent + motion state
+      ▼
+[Axum HTTP Server — apollos-ui-navigator]
+      │
+      ├── classify_intent(transcript, motion_state)
+      │       ↓ Physical → block, return safety message
+      │       ↓ Digital → spawn DigitalAgent
+      │
+      ├── DigitalAgent::execute_with_cancel()
+      │       │ loop (max 20 steps):
+      │       ├── screenshot() via chromiumoxide CDP
+      │       ├── extract_dom_context() [hybrid nav]
+      │       ├── DO Gradient AI (llama3.2-vision) → AgentAction JSON
+      │       ├── sensitive_guard() → escalate on payment/OTP/password
+      │       ├── url_validate() → block javascript:/file:/local IPs
+      │       └── BrowserExecutor::execute() → Chrome action
+      │
+      └── SSE broadcast → demo/status (with replay buffer)
+
+Deployment: DigitalOcean App Platform (.do/app.yaml)
+AI: DigitalOcean Gradient™ (inference.do-ai.run)
+```
 
 ---
 
 ## Project Structure
 
 ```
-src/
-├── main.rs                    # Server entry point
-├── lib.rs                     # Router + AppState
-├── digital_agent.rs           # Agentic loop with CancellationToken
-├── nova_reasoning_client.rs   # Gemini Vision reasoning client
-├── browser_executor.rs        # chromiumoxide headless Chrome wrapper
-├── demo_handler.rs            # /demo/* endpoints for demonstration
-├── session.rs                 # Session state + DigitalAgentHandle
-├── agent.rs                   # Intent classification
-├── ws_registry.rs             # WebSocket broadcast registry
-├── human_fallback.rs          # Human escalation (Twilio)
-└── types.rs                   # Shared types (MotionState, etc.)
+apollos-ui-navigator/
+├── .do/app.yaml                  ← DO App Platform spec
+├── Cargo.toml
+├── Dockerfile
+├── .env.example
+└── src/
+    ├── main.rs
+    ├── lib.rs
+    ├── types.rs
+    ├── agent.rs                  ← Motion-aware intent classifier
+    ├── digital_agent.rs          ← Agentic loop + safety system
+    ├── nova_reasoning_client.rs  ← DO Gradient AI client
+    ├── browser_executor.rs       ← Chromiumoxide CDP wrapper
+    ├── demo_handler.rs           ← SSE + demo HTTP endpoints
+    ├── session.rs                ← In-memory session store
+    ├── ws_registry.rs            ← WebSocket broadcast registry
+    └── human_fallback.rs         ← Human escalation service
 ```
-
----
-
-## Note on scope
-
-This repository contains the **UI Navigator** layer submitted for the
-Gemini Live Agent Challenge. It is part of a larger assistive navigation
-system for blind users; the physical navigation safety core (real-time
-hazard detection, sensor fusion) is not included here to keep the
-submission focused on the agentic web navigation capability.
-
-The digital agent layer is fully self-contained and runnable with only
-a `GEMINI_API_KEY` and Chrome installed.
 
 ---
 
 ## License
 
 MIT
-
----
-
-## DSDD Documentation
-
-This project uses **DSDD (Design-Sufficient Design Document)** format for architecture and implementation specifications.
-
-### Documentation Files
-
-| File | Purpose | Status |
-|---|---|---|
-| [`CONTRACTS.md`](CONTRACTS.md) | Schema registry - types, interfaces, error codes | ✅ Complete |
-| [`BLUEPRINT.md`](BLUEPRINT.md) | Behavior specification - component logic, data flow | ✅ Complete |
-| [`ADR.md`](ADR.md) | Architecture decisions - why we made design choices | ✅ Complete |
-| [`README.md`](dsdd_template/README.md) | DSDD format explanation and workflow | ✅ Complete |
-
-### Key Architecture Decisions
-
-- **Vision-based navigation** over DOM access for 97% web compatibility (ADR-001)
-- **Rust ecosystem** for performance and reliability (ADR-002)
-- **Safety-first approach** with human escalation for sensitive content (ADR-004, ADR-007)
-- **Screenshot caching** to optimize API costs and latency (ADR-006)
-- **Real-time WebSocket narration** for accessibility (ADR-008)
-
-### Implementation Ready
-
-The DSDD documentation provides sufficient detail for an AI agent to implement the complete system without clarification. All schemas, behaviors, and architectural decisions are fully specified.
-
-For developers: Start with `BLUEPRINT.md` Section 8 for build order, then reference `CONTRACTS.md` for type definitions and `ADR.md` for architectural context.

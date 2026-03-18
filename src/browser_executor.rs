@@ -25,7 +25,7 @@ impl std::fmt::Debug for BrowserExecutor {
 
 impl BrowserExecutor {
     pub async fn new(starting_url: &str) -> anyhow::Result<Self> {
-        // [FIX v2] Chrome executable path từ env (Cloud Run có thể khác local)
+        // Chrome executable path from env — configurable for different deployment environments
         let chrome_path = std::env::var("CHROME_EXECUTABLE").unwrap_or_else(|_| {
             // Thử các path phổ biến
             for path in &[
@@ -52,13 +52,13 @@ impl BrowserExecutor {
             HeadlessMode::False
         };
 
-        // [FIX v2 — CRITICAL] Required flags cho container/Cloud Run
+        // [CRITICAL] Required flags for container deployments (DO App Platform):
         let config = BrowserConfig::builder()
             .chrome_executable(&chrome_path)
             .headless_mode(headless_mode)
             .window_size(1280, 800)
-            // BẮT BUỘC trên Cloud Run / bất kỳ container nào:
-            .arg("--no-sandbox") // không có root/setuid sandbox
+            // Required in any container environment:
+            .arg("--no-sandbox") // no setuid sandbox in containers
             .arg("--disable-gpu") // không có GPU
             .arg("--disable-dev-shm-usage") // /dev/shm limited trong container
             // Demo: Chrome window ở góc trên trái, không overlap terminal

@@ -21,6 +21,7 @@ use crate::{
     session::DigitalAgentHandle,
 };
 use crate::types::MotionState;
+use crate::agent::{classify_intent, Intent};
 use tokio_util::sync::CancellationToken;
 
 // Global demo session ID — single session cho demo
@@ -29,6 +30,7 @@ const DEMO_SESSION_ID: &str = "demo-session-001";
 #[derive(Deserialize)]
 pub struct StartTaskRequest {
     pub intent: String,
+    pub motion_state: Option<String>,  // ADR-035: optional, defaults to "stationary"
 }
 
 #[derive(Serialize)]
@@ -69,11 +71,49 @@ fn broadcast_status(msg: String) {
     }
 }
 
+/// ADR-033: Clear replay buffer — removes stale history from previous task runs
+fn clear_replay_buffer() {
+    if let Ok(mut buf) = get_replay_buffer().lock() {
+        buf.clear();
+    }
+}
+
 /// POST /demo/start_task
 pub async fn start_task(
     State(state): State<AppState>,
     Json(req): Json<StartTaskRequest>,
 ) -> impl IntoResponse {
+    // ADR-033: Clear replay buffer FIRST — prevents old task history leaking into new task
+    // Critical for demo retry scenarios (judge calling start_task multiple times)
+    clear_replay_buffer();
+
+    // ADR-035: Motion-aware intent classification — safety gate
+    let motion_state = match req.motion_state.as_deref() {
+        Some("running")      => MotionState::Running,
+        Some("walking_fast") => MotionState::WalkingFast,
+        Some("walking_slow") => MotionState::WalkingSlow,
+        _                    => MotionState::Stationary,
+    };
+
+    match classify_intent(&req.intent, motion_state.clone()) {
+        Intent::Physical => {
+            broadcast_status(format!(
+                "🏃 Phát hiện chuyển động — không thực hiện tác vụ số. Intent: '{}'",
+                req.intent
+            ));
+            return Json(serde_json::json!({
+                "task_id": DEMO_SESSION_ID,
+                "status": "physical_safety_mode",
+                "message": "Đang di chuyển — tác vụ số bị tạm dừng vì lý do an toàn",
+                "intent": req.intent,
+                "motion_state": req.motion_state
+            })).into_response();
+        }
+        Intent::Digital(_) => {
+            // proceed with normal digital task flow below
+        }
+    }
+
     // Cancel bất kỳ task cũ nào
     state.sessions.cancel_digital_agent(
         DEMO_SESSION_ID,
@@ -102,7 +142,7 @@ pub async fn start_task(
     let browser_slot = state.sessions.get_browser_executor_slot(DEMO_SESSION_ID).await;
 
     let ctx = DigitalSessionContext {
-        motion_state: MotionState::Stationary,
+        motion_state,  // ADR-035: use classified motion state, not hardcoded Stationary
         session_id: DEMO_SESSION_ID.to_string(),
         ws_registry: ws_registry.clone(),
         fallback: fallback.clone(),
@@ -140,7 +180,7 @@ pub async fn start_task(
     Json(StartTaskResponse {
         task_id: DEMO_SESSION_ID.to_string(),
         status: "started".to_string(),
-    })
+    }).into_response()
 }
 
 /// POST /demo/trigger_hard_stop
@@ -202,15 +242,16 @@ pub async fn user_reply(
     State(state): State<AppState>,
     Json(req): Json<UserReplyRequest>,
 ) -> impl IntoResponse {
-    let status_tx = get_status_tx();
-
     let delivered = state
         .sessions
         .send_user_reply(DEMO_SESSION_ID, req.answer.clone())
         .await;
 
     if delivered {
-        let _ = status_tx.send(format!("👤 User replied: {}", req.answer));
+        // ADR-034: Use broadcast_status — NOT raw status_tx.send()
+        // This ensures user reply is captured in replay buffer for late SSE subscribers
+        broadcast_status(format!("👤 User replied: {}", req.answer));
+
         Json(serde_json::json!({
             "status": "delivered",
             "answer": req.answer

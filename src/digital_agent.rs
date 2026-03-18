@@ -123,7 +123,7 @@ impl DigitalAgent {
             }
         };
 
-        // ADR-012: DO Gradient rate limits — tighter than Gemini
+        // ADR-012: DO Gradient rate limits — tuned for optimal inference throughput
         let nova_min_gap_s = env_f64("NOVA_MIN_GAP_S", 1.0).max(0.1);
         let nova_burst_limit = env_usize("NOVA_BURST_LIMIT", 4).max(1);
         let nova_burst_window_s = env_f64("NOVA_BURST_WINDOW_S", 15.0).max(1.0);
@@ -770,38 +770,42 @@ const ACCOUNT_KEYWORDS: [&str; 12] = [
 use image::GenericImageView;
 
 fn semantic_changed(old: &[u8], new: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+
     const SEMANTIC_DIFF_THRESHOLD: f64 = 0.05;
-    if old == new {
-        return false;
-    }
-    
-    // Attempt to decode both images
-    if let (Ok(img1), Ok(img2)) = (
-        image::load_from_memory(old),
-        image::load_from_memory(new),
-    ) {
-        if img1.dimensions() != img2.dimensions() {
-            return true;
-        }
-        
-        let bounds = img1.dimensions();
-        let total_pixels = (bounds.0 * bounds.1) as f64;
-        let mut diff_pixels = 0;
-        
-        let rgba1 = img1.to_rgba8();
-        let rgba2 = img2.to_rgba8();
-        
-        for (p1, p2) in rgba1.pixels().zip(rgba2.pixels()) {
-            if p1 != p2 {
-                diff_pixels += 1;
+
+    if old == new { return false; }
+
+    // ADR-036: Fast path — SHA256 exact match
+    let hash_old = { let mut h = Sha256::new(); h.update(old); h.finalize() };
+    let hash_new = { let mut h = Sha256::new(); h.update(new); h.finalize() };
+    if hash_old == hash_new { return false; }
+
+    let (img1, img2) = match (image::load_from_memory(old), image::load_from_memory(new)) {
+        (Ok(a), Ok(b)) => (a, b),
+        _ => return true,
+    };
+
+    if img1.dimensions() != img2.dimensions() { return true; }
+
+    let (w, h) = img1.dimensions();
+    let total = (w * h) as f64;
+    // ADR-036: early exit threshold — stop counting after threshold exceeded
+    let max_diff = (total * SEMANTIC_DIFF_THRESHOLD) as u64 + 1;
+
+    let (rgba1, rgba2) = (img1.to_rgba8(), img2.to_rgba8());
+    let mut diff: u64 = 0;
+
+    for (p1, p2) in rgba1.pixels().zip(rgba2.pixels()) {
+        if p1 != p2 {
+            diff += 1;
+            if diff > max_diff {
+                return true; // ADR-036: early exit
             }
         }
-        let diff_ratio = (diff_pixels as f64) / total_pixels;
-        diff_ratio > SEMANTIC_DIFF_THRESHOLD
-    } else {
-        // If decode fails, fallback to true (different)
-        true
     }
+
+    false
 }
 
 async fn activate_safe_mode(
@@ -809,34 +813,53 @@ async fn activate_safe_mode(
     reason: &str,
     cancel: &CancellationToken,
 ) -> DigitalResult {
+    // ADR-032: Bound safe mode — max 10 × 30s = 5 minutes, never infinite
+    const SAFE_MODE_MAX_LOOPS: u32 = 10;
+
     let ws = ctx.ws_registry.clone();
     let sid = ctx.session_id.clone();
-    
-    // Navigate to safe blank page if possible
-    if let Some(browser) = ctx.browser_executor_slot.lock().await.clone() {
-        let _ = browser.execute(&AgentAction::Navigate { url: "about:blank".to_string() }).await;
+
+    // ADR-032: Call human fallback at entry, not never
+    let help_link = ctx.fallback.create_help_session(&sid, reason).await;
+    if let Some(ref msg) = help_link {
+        let _ = ws.send_live(
+            &sid,
+            BackendToClientMessage::HumanHelpSession(msg.clone()),
+        ).await;
     }
-    
-    let base_msg = format!("🔒 Safe Mode: {} Đang kết nối với người hỗ trợ...", reason);
-    loop {
-        let _ = ws
-            .send_live(
-                &sid,
-                BackendToClientMessage::AssistantText(AssistantTextMessage {
-                    session_id: sid.clone(),
-                    timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
-                    text: base_msg.clone(),
-                }),
-            )
-            .await;
-            
+
+    // Navigate to safe blank page while slot is still populated
+    if let Some(browser) = ctx.browser_executor_slot.lock().await.clone() {
+        let _ = browser.execute(&AgentAction::Navigate {
+            url: "about:blank".to_string(),
+        }).await;
+    }
+
+    let base_msg = format!(
+        "🔒 Safe Mode: {} — Đang kết nối người hỗ trợ, vui lòng giữ nguyên vị trí.",
+        reason
+    );
+
+    for _ in 0..SAFE_MODE_MAX_LOOPS {
+        let _ = ws.send_live(
+            &sid,
+            BackendToClientMessage::AssistantText(AssistantTextMessage {
+                session_id: sid.clone(),
+                timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+                text: base_msg.clone(),
+            }),
+        ).await;
+
         tokio::select! {
-             _ = cancel.cancelled() => {
-                 return DigitalResult::NeedHuman(reason.to_string());
-             }
-             _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            _ = cancel.cancelled() => {
+                return DigitalResult::NeedHuman(reason.to_string());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
         }
     }
+
+    // ADR-032: Max loops reached — return NeedHuman regardless
+    DigitalResult::NeedHuman(format!("Đang chờ hỗ trợ: {}", reason))
 }
 
 fn env_f64(key: &str, default: f64) -> f64 {

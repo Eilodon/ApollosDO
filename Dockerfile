@@ -9,8 +9,6 @@ RUN apt-get update && apt-get install -y \
     chromium-browser \
     ca-certificates \
     libssl3 \
-    && apt-get install -y python3-pip \
-    && pip3 install google-generativeai --break-system-packages \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CHROME_EXECUTABLE=/usr/bin/chromium-browser
