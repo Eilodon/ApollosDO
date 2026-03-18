@@ -3,7 +3,7 @@
 
 > A safety-first voice browser agent for blind and low-vision users.
 
-Apollos DO helps a blind user complete digital tasks on inaccessible websites by combining browser automation, screenshot-based reasoning, voice interaction, and human escalation for risky moments.
+Apollos DO helps a blind user complete digital tasks on inaccessible websites by combining browser automation, hybrid reasoning (DOM context + vision fallback), voice interaction, and human escalation for risky moments.
 
 It is built as a new DigitalOcean Gradient AI hackathon project and is designed to feel like more than a prototype: it has a running web demo, a deploy spec for DigitalOcean App Platform, explicit safety guardrails, and judge-friendly setup instructions.
 
@@ -12,8 +12,8 @@ At a glance
 -----------
 User input        : voice or text
 Primary interface : browser voice demo at /demo
-AI engine         : DigitalOcean Gradient AI (llama3.3-70b-instruct)
-Core loop         : screenshot -> reason -> validate -> execute -> narrate
+AI engine         : DigitalOcean Gradient AI (llama3.3-70b-instruct + llama3.2-vision)
+Core loop         : context/screenshot -> reason -> validate -> execute -> narrate
 Safety boundary   : hard stop + ambiguity handling + human escalation
 Deploy target     : DigitalOcean App Platform
 ```
@@ -21,7 +21,7 @@ Deploy target     : DigitalOcean App Platform
 | Category | What to notice fast |
 |---|---|
 | Problem | Inaccessible websites still block blind users from routine digital tasks |
-| Product | A voice browser agent that navigates websites by sight, not DOM assumptions alone |
+| Product | A voice browser agent that navigates websites by hybrid sight and DOM context |
 | AI usage | Gradient AI is the core decision engine in the live browser loop |
 | Safety | It asks, narrates, interrupts, and escalates instead of guessing |
 | Hackathon fit | Working web demo, DO deploy spec, open-source repo, judge-ready docs |
@@ -41,7 +41,7 @@ That leaves blind and low-vision users stuck when a site is visually complex, po
 Apollos DO is a voice-controlled AI browser agent that:
 
 - understands a natural-language task
-- looks at the website the way a sighted helper would, through screenshots
+- looks at the website through a hybrid of interactive DOM context (precision) and screenshots (vision fallback)
 - decides the next safe browser action with DigitalOcean Gradient AI
 - narrates its progress in real time
 - asks clarifying questions when the intent is ambiguous
@@ -53,9 +53,9 @@ User speaks a task
       ↓
 Browser demo captures voice or text
       ↓
-Rust backend launches a browser and captures the page
+Rust backend launches a browser and captures DOM + screenshot
       ↓
-DigitalOcean Gradient AI decides the next action from the screenshot
+DigitalOcean Gradient AI decides the next action (Hybrid Strategy)
       ↓
 Apollos validates safety constraints before executing
       ↓
@@ -107,7 +107,7 @@ Apollos DO currently uses:
 - Rust backend orchestration around the Gradient call
 - DigitalOcean App Platform deployment spec in [.do/app.yaml](./.do/app.yaml)
 
-In practice, the app sends the current browser screenshot plus intent context to Gradient AI, receives a structured next action, validates it against safety rules, and then executes it in Chromium.
+In practice, the app sends the interactive DOM metadata and/or the current browser screenshot to Gradient AI, receives a structured next action, validates it against safety rules, and then executes it in Chromium.
 
 This is not a decorative integration. Gradient AI is the decision-making core of the product.
 
@@ -152,7 +152,7 @@ The current hackathon scope focuses on a web demo first.
 
 - web demo UI with browser-native speech recognition and speech synthesis
 - voice or text task entry at `GET /demo`
-- screenshot-based website navigation with DigitalOcean Gradient AI
+- hybrid DOM + screenshot website navigation with DigitalOcean Gradient AI
 - motion-aware blocking for unsafe digital tasks
 - ask-user turns for ambiguous intent
 - hard-stop cancellation
@@ -259,16 +259,16 @@ See [walkthrough.md](./walkthrough.md) for the judge-facing walkthrough and [doc
            ▼
 ┌──────────────────────────────────────┐
 │ DigitalOcean Gradient AI             │
-│ llama3.3-70b-instruct                │
-│ returns structured next action       │
+│ - llama3.3-70b-instruct (Reasoning)  │
+│ - llama3.2-vision (Vision Fallback)  │
 └──────────────────────────────────────┘
 ```
 
 ### Runtime loop
 
 ```text
-capture screenshot
-   -> send to Gradient AI
+capture DOM + screenshot
+   -> send to Gradient AI (Hybrid)
    -> parse next action
    -> validate safety
    -> execute in Chromium
@@ -296,7 +296,7 @@ Apollos DO uses a safety-first design:
 | Web framework | Axum |
 | Async runtime | Tokio |
 | Browser automation | chromiumoxide |
-| AI reasoning | DigitalOcean Gradient AI (`llama3.3-70b-instruct`) |
+| AI reasoning | DigitalOcean Gradient AI (llama3.3-70b-instruct, llama3.2-vision) |
 | Deployment target | DigitalOcean App Platform |
 | Frontend demo | HTML + browser Web Speech API |
 
@@ -379,7 +379,7 @@ doctl apps create --spec .do/app.yaml
 ```text
 DigitalOcean path
 -----------------
-Gradient AI      -> screenshot reasoning
+Gradient AI      -> hybrid reasoning (DOM + vision)
 App Platform     -> web deployment target
 Public repo      -> hackathon submission artifact
 ```
